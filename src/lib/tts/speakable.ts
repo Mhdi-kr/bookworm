@@ -59,10 +59,11 @@ const SPEAKABLE_STYLE = `
   position: absolute !important;
   left: 0.2em !important;
   top: 0.35em !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
   width: 1.35em !important;
   height: 1.35em !important;
-  line-height: 1.35em !important;
-  text-align: center !important;
   font-size: 0.68em !important;
   font-weight: bold !important;
   color: #9c3b2a !important;
@@ -75,6 +76,10 @@ const SPEAKABLE_STYLE = `
 }
 .${PLAY_BTN_CLASS}::before {
   content: "▶" !important;
+  display: block !important;
+  line-height: 1 !important;
+  /* Optical center: play glyphs sit slightly left in the em box */
+  transform: translateX(0.06em) !important;
 }
 .${SPEAKABLE_CLASS}:hover,
 .${SPEAKABLE_CLASS}:focus-visible,
