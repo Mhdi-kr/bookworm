@@ -1,0 +1,41 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Bookworm",
+  "version": "0.1.0",
+  "identifier": "com.bookworm.app",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://127.0.0.1:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Bookworm",
+        "width": 1280,
+        "height": 860,
+        "minWidth": 960,
+        "minHeight": 680
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self' ipc: http://ipc.localhost asset: http://asset.localhost; connect-src 'self' ipc: http://ipc.localhost http://asset.localhost asset: blob: data: https://huggingface.co https://*.huggingface.co https://cdn-lfs.huggingface.co https://cdn-lfs-us-1.huggingface.co https://cdn-lfs-eu-1.huggingface.co https://cas-bridge.xethub.hf.co https://*.hf.co https://cdn.jsdelivr.net https://unpkg.com https://openlibrary.org https://covers.openlibrary.org https://www.googleapis.com https://books.google.com https://*.googleusercontent.com; img-src 'self' asset: http://asset.localhost blob: data: https://covers.openlibrary.org https://books.google.com https://*.googleusercontent.com; media-src 'self' blob: asset: http://asset.localhost; script-src 'self' 'unsafe-eval' 'wasm-unsafe-eval' blob:; worker-src 'self' blob:; style-src 'self' 'unsafe-inline' blob: asset: http://asset.localhost; font-src 'self' data: blob:; frame-src 'self' blob: data: asset: http://asset.localhost",
+      "assetProtocol": {
+        "enable": true,
+        "scope": ["$APPDATA/**", "$APPDATA/**/**"]
+      }
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ]
+  }
+}
