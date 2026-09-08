@@ -20,6 +20,13 @@ type MediaMeta = {
   album?: string;
 };
 
+export type SpeakSequenceCallbacks = {
+  /** Fired when a block's audio actually begins playing. */
+  onBlockPlay?: (index: number) => void;
+  /** Fired when the next block starts synthesizing (preload). */
+  onBlockLoading?: (index: number) => void;
+};
+
 /**
  * Kokoro TTS playback: Web Audio for reliable output, HTMLAudio fallback for
  * lock-screen / Media Session on mobile webviews.
@@ -35,7 +42,7 @@ export class TtsEngine {
   private sources: AudioBufferSourceNode[] = [];
   private nextTime = 0;
   private htmlAudio: HTMLAudioElement | null = null;
-  private htmlQueue: string[] = [];
+  private htmlQueue: Array<{ url: string; blockIndex?: number }> = [];
   private htmlPlaying = false;
   private streamDone = false;
   private waiters = new Map<number, (completed: boolean) => void>();
@@ -48,9 +55,13 @@ export class TtsEngine {
   private pendingSequence: {
     texts: string[];
     meta: MediaMeta | null;
-    onBlockStart?: (index: number) => void;
+    callbacks?: SpeakSequenceCallbacks;
   } | null = null;
-  private onSectionBlockStart: ((index: number) => void) | null = null;
+  private onSectionBlockPlay: ((index: number) => void) | null = null;
+  private onSectionBlockLoading: ((index: number) => void) | null = null;
+  private scheduledPlayBlockIndex = -1;
+  private playNotifyTimers: number[] = [];
+  private sequenceTexts: string[] = [];
   version = 0;
 
   status: Status = "idle";
@@ -83,7 +94,7 @@ export class TtsEngine {
     this.syncMediaSession();
   }
 
-  /** Call from a user gesture (Speak / Play book) to satisfy autoplay policies. */
+  /** Call from a user gesture (Speak) to satisfy autoplay policies. */
   async unlockAudio() {
     const ctx = this.audioContext();
     if (ctx.state === "suspended") {
@@ -200,7 +211,11 @@ export class TtsEngine {
     this.pendingMeta = null;
     this.prefetchKey = "";
     this.pendingSequence = null;
-    this.onSectionBlockStart = null;
+    this.onSectionBlockPlay = null;
+    this.onSectionBlockLoading = null;
+    this.scheduledPlayBlockIndex = -1;
+    this.sequenceTexts = [];
+    this.clearPlayNotifyTimers();
     if (clearText) this.currentText = "";
     return generation;
   }
@@ -248,13 +263,16 @@ export class TtsEngine {
   async speakSequence(
     texts: string[],
     meta?: MediaMeta,
-    onBlockStart?: (index: number) => void,
+    callbacks?: SpeakSequenceCallbacks,
   ): Promise<boolean> {
     const trimmed = texts.map((text) => text.replace(/\s+/g, " ").trim()).filter(Boolean);
     if (!trimmed.length) return true;
 
     const generation = this.interrupt(false);
-    this.onSectionBlockStart = onBlockStart ?? null;
+    this.onSectionBlockPlay = callbacks?.onBlockPlay ?? null;
+    this.onSectionBlockLoading = callbacks?.onBlockLoading ?? null;
+    this.scheduledPlayBlockIndex = -1;
+    this.sequenceTexts = trimmed;
     this.currentText = trimmed[0];
     this.error = null;
     if (meta) this.setMediaMeta(meta);
@@ -278,7 +296,7 @@ export class TtsEngine {
     };
 
     if (!this.workerReady) {
-      this.pendingSequence = { texts: trimmed, meta: meta ?? null, onBlockStart };
+      this.pendingSequence = { texts: trimmed, meta: meta ?? null, callbacks };
       this.pendingText = null;
       this.pendingMeta = null;
       if (this.status !== "loading") {
@@ -361,7 +379,8 @@ export class TtsEngine {
     }
     this.status = "ready";
     this.resolveWaiter(generation, true);
-    this.onSectionBlockStart = null;
+    this.onSectionBlockPlay = null;
+    this.onSectionBlockLoading = null;
     this.releaseWakeLock();
     this.syncMediaSession();
     this.emit();
@@ -443,8 +462,33 @@ export class TtsEngine {
     this.wakeLock = null;
   }
 
+  private clearPlayNotifyTimers() {
+    for (const timer of this.playNotifyTimers) window.clearTimeout(timer);
+    this.playNotifyTimers = [];
+  }
+
+  private notifyBlockPlay(blockIndex: number, generation: number, delayMs = 0) {
+    if (blockIndex === this.scheduledPlayBlockIndex) return;
+    this.scheduledPlayBlockIndex = blockIndex;
+    const fire = () => {
+      if (generation !== this.generation) return;
+      const text = this.sequenceTexts[blockIndex];
+      if (text) this.currentText = text;
+      this.onSectionBlockPlay?.(blockIndex);
+      this.emit();
+    };
+    if (delayMs <= 0) {
+      fire();
+      return;
+    }
+    const timer = window.setTimeout(fire, delayMs);
+    this.playNotifyTimers.push(timer);
+  }
+
   private stopPlayback() {
     this.streamDone = false;
+    this.clearPlayNotifyTimers();
+    this.scheduledPlayBlockIndex = -1;
     this.sources.forEach((source) => {
       try {
         source.stop();
@@ -463,12 +507,17 @@ export class TtsEngine {
       html.removeAttribute("src");
       html.load();
     }
-    this.htmlQueue.forEach((url) => URL.revokeObjectURL(url));
+    this.htmlQueue.forEach((item) => URL.revokeObjectURL(item.url));
     this.htmlQueue = [];
     this.htmlPlaying = false;
   }
 
-  private playChunkWeb(audio: Float32Array, sampleRate: number, generation: number) {
+  private playChunkWeb(
+    audio: Float32Array,
+    sampleRate: number,
+    generation: number,
+    blockIndex?: number,
+  ) {
     const ctx = this.audioContext();
     if (ctx.state === "suspended") void ctx.resume();
     const buffer = ctx.createBuffer(1, audio.length, sampleRate);
@@ -477,6 +526,9 @@ export class TtsEngine {
     source.buffer = buffer;
     source.connect(ctx.destination);
     const startAt = Math.max(ctx.currentTime, this.nextTime);
+    if (typeof blockIndex === "number") {
+      this.notifyBlockPlay(blockIndex, generation, Math.max(0, (startAt - ctx.currentTime) * 1000));
+    }
     source.start(startAt);
     this.nextTime = startAt + buffer.duration;
     this.sources.push(source);
@@ -486,10 +538,15 @@ export class TtsEngine {
     };
   }
 
-  private enqueueHtmlChunk(audio: Float32Array, sampleRate: number, generation: number) {
+  private enqueueHtmlChunk(
+    audio: Float32Array,
+    sampleRate: number,
+    generation: number,
+    blockIndex?: number,
+  ) {
     const blob = encodeWav(audio, sampleRate);
     const url = URL.createObjectURL(blob);
-    this.htmlQueue.push(url);
+    this.htmlQueue.push({ url, blockIndex });
     void this.pumpHtml(generation);
   }
 
@@ -502,30 +559,38 @@ export class TtsEngine {
     }
     const audio = this.ensureHtmlAudio();
     this.htmlPlaying = true;
-    audio.src = next;
+    if (typeof next.blockIndex === "number") {
+      this.notifyBlockPlay(next.blockIndex, generation);
+    }
+    audio.src = next.url;
     this.syncMediaSession();
     try {
       await audio.play();
     } catch (error) {
       console.warn("[tts] HTML audio failed, switching to Web Audio", error);
       this.useHtmlFallback = false;
-      URL.revokeObjectURL(next);
+      URL.revokeObjectURL(next.url);
       this.htmlPlaying = false;
       void this.pumpHtml(generation);
     }
   }
 
-  private playChunk(audio: Float32Array, sampleRate: number, generation: number) {
+  private playChunk(
+    audio: Float32Array,
+    sampleRate: number,
+    generation: number,
+    blockIndex?: number,
+  ) {
     if (this.useHtmlFallback) {
-      this.enqueueHtmlChunk(audio, sampleRate, generation);
+      this.enqueueHtmlChunk(audio, sampleRate, generation, blockIndex);
       return;
     }
     try {
-      this.playChunkWeb(audio, sampleRate, generation);
+      this.playChunkWeb(audio, sampleRate, generation, blockIndex);
     } catch (error) {
       console.warn("[tts] Web Audio failed, trying HTML fallback", error);
       this.useHtmlFallback = true;
-      this.enqueueHtmlChunk(audio, sampleRate, generation);
+      this.enqueueHtmlChunk(audio, sampleRate, generation, blockIndex);
     }
   }
 
@@ -571,9 +636,12 @@ export class TtsEngine {
         this.emit();
       });
       if (this.pendingSequence) {
-        const { texts, meta, onBlockStart } = this.pendingSequence;
+        const { texts, meta, callbacks } = this.pendingSequence;
         this.pendingSequence = null;
-        this.onSectionBlockStart = onBlockStart ?? null;
+        this.onSectionBlockPlay = callbacks?.onBlockPlay ?? null;
+        this.onSectionBlockLoading = callbacks?.onBlockLoading ?? null;
+        this.scheduledPlayBlockIndex = -1;
+        this.sequenceTexts = texts;
         this.currentText = texts[0] ?? "";
         this.streamDone = false;
         this.status = "preparing";
@@ -619,15 +687,18 @@ export class TtsEngine {
       return;
     }
     if (data.generation !== undefined && data.generation !== this.generation) return;
-    if (data.type === "blockStart") {
+    if (data.type === "blockLoading") {
       const blockIndex = data.blockIndex ?? 0;
-      const text = data.text ?? "";
-      if (text) this.currentText = text;
-      this.onSectionBlockStart?.(blockIndex);
-      if (this.status !== "paused") {
+      this.onSectionBlockLoading?.(blockIndex);
+      return;
+    }
+    if (data.type === "blockStart") {
+      // Text/title updates on actual playback via notifyBlockPlay — not here,
+      // where the next preloaded block becomes ready ahead of audio.
+      if (this.status !== "paused" && this.status !== "speaking") {
         this.status = "preparing";
+        this.emit();
       }
-      this.emit();
       return;
     }
     if (data.type === "chunk" && data.audio && data.sampleRate) {
@@ -638,7 +709,7 @@ export class TtsEngine {
         this.status = "speaking";
         this.syncMediaSession();
       }
-      this.playChunk(samples, data.sampleRate, generation);
+      this.playChunk(samples, data.sampleRate, generation, data.blockIndex);
       this.emit();
       return;
     }

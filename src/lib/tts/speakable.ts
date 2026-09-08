@@ -15,6 +15,7 @@ export type SpeakSectionItem = {
 
 const SPEAKABLE_CLASS = "bookworm-speakable";
 const SPEAKING_CLASS = "bookworm-speaking";
+const LOADING_CLASS = "bookworm-loading";
 const PLAY_BTN_CLASS = "bookworm-play-btn";
 
 const SPEAKABLE_TAGS = new Set([
@@ -79,7 +80,7 @@ const SPEAKABLE_STYLE = `
   display: block !important;
   line-height: 1 !important;
   /* Optical center: play glyphs sit slightly left in the em box */
-  transform: translateX(0.06em) !important;
+  margin-left: 0.06em !important;
 }
 .${SPEAKABLE_CLASS}:hover,
 .${SPEAKABLE_CLASS}:focus-visible,
@@ -96,7 +97,8 @@ const SPEAKABLE_STYLE = `
 .${SPEAKABLE_CLASS}:hover .${PLAY_BTN_CLASS},
 .${SPEAKABLE_CLASS}:focus-visible .${PLAY_BTN_CLASS},
 .${SPEAKABLE_CLASS}:active .${PLAY_BTN_CLASS},
-.${SPEAKING_CLASS} .${PLAY_BTN_CLASS} {
+.${SPEAKING_CLASS} .${PLAY_BTN_CLASS},
+.${LOADING_CLASS} .${PLAY_BTN_CLASS} {
   opacity: 1 !important;
 }
 .${SPEAKING_CLASS} {
@@ -106,6 +108,27 @@ const SPEAKABLE_STYLE = `
 }
 .${SPEAKING_CLASS}::before {
   background: rgba(156, 59, 42, 1) !important;
+}
+.${LOADING_CLASS} .${PLAY_BTN_CLASS} {
+  animation: bookworm-spin 0.7s linear infinite !important;
+}
+.${LOADING_CLASS} .${PLAY_BTN_CLASS}::before {
+  content: "" !important;
+  box-sizing: border-box !important;
+  width: 0.7em !important;
+  height: 0.7em !important;
+  margin: 0 !important;
+  border: 2px solid rgba(156, 59, 42, 0.25) !important;
+  border-top-color: #9c3b2a !important;
+  border-radius: 50% !important;
+}
+@keyframes bookworm-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
 }
 `;
 
@@ -179,9 +202,9 @@ export function attachSpeakableBlocks(
   if (!style) {
     style = doc.createElement("style");
     style.id = "bookworm-speakable-style";
-    style.textContent = SPEAKABLE_STYLE;
     doc.head.appendChild(style);
   }
+  style.textContent = SPEAKABLE_STYLE;
 
   const cleanups: Array<() => void> = [];
   const blocks = Array.from(doc.querySelectorAll(SPEAKABLE_BLOCK_SELECTOR)).filter(isSpeakableBlock);
@@ -199,6 +222,9 @@ export function attachSpeakableBlocks(
     if (!items.length) return false;
     doc.querySelectorAll(`.${SPEAKING_CLASS}`).forEach((node) => {
       node.classList.remove(SPEAKING_CLASS);
+    });
+    doc.querySelectorAll(`.${LOADING_CLASS}`).forEach((node) => {
+      node.classList.remove(LOADING_CLASS);
     });
     items[0].element.classList.add(SPEAKING_CLASS);
     onSpeakSection(items);
@@ -266,6 +292,9 @@ export function attachSpeakableBlocks(
       doc.querySelectorAll(`.${SPEAKING_CLASS}`).forEach((node) => {
         node.classList.remove(SPEAKING_CLASS);
       });
+      doc.querySelectorAll(`.${LOADING_CLASS}`).forEach((node) => {
+        node.classList.remove(LOADING_CLASS);
+      });
 
       if (speakSectionFrom(block)) return;
 
@@ -297,7 +326,7 @@ export function attachSpeakableBlocks(
 
     cleanups.push(() => {
       win.clearTimeout(prefetchTimer);
-      block.classList.remove(SPEAKABLE_CLASS, SPEAKING_CLASS);
+      block.classList.remove(SPEAKABLE_CLASS, SPEAKING_CLASS, LOADING_CLASS);
       block.removeAttribute("tabindex");
       block.querySelector(`.${PLAY_BTN_CLASS}`)?.remove();
       block.removeEventListener("pointerdown", onPointerDown);
@@ -314,6 +343,9 @@ export function attachSpeakableBlocks(
     doc.querySelectorAll(`.${SPEAKING_CLASS}`).forEach((node) => {
       node.classList.remove(SPEAKING_CLASS);
     });
+    doc.querySelectorAll(`.${LOADING_CLASS}`).forEach((node) => {
+      node.classList.remove(LOADING_CLASS);
+    });
   };
 }
 
@@ -321,9 +353,30 @@ export function setSpeakingHighlight(doc: Document, element: Element | null) {
   doc.querySelectorAll(`.${SPEAKING_CLASS}`).forEach((node) => {
     node.classList.remove(SPEAKING_CLASS);
   });
-  element?.classList.add(SPEAKING_CLASS);
+  if (element) {
+    element.classList.remove(LOADING_CLASS);
+    element.classList.add(SPEAKING_CLASS);
+  }
+}
+
+export function setBlockLoading(element: Element | null, loading: boolean) {
+  if (!element) return;
+  if (loading) {
+    // Don't decorate the block that is already being spoken.
+    if (element.classList.contains(SPEAKING_CLASS)) return;
+    element.classList.add(LOADING_CLASS);
+  } else {
+    element.classList.remove(LOADING_CLASS);
+  }
+}
+
+export function clearBlockLoading(doc: Document) {
+  doc.querySelectorAll(`.${LOADING_CLASS}`).forEach((node) => {
+    node.classList.remove(LOADING_CLASS);
+  });
 }
 
 export function clearSpeakingHighlights(doc: Document) {
+  clearBlockLoading(doc);
   setSpeakingHighlight(doc, null);
 }

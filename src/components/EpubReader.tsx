@@ -1,10 +1,10 @@
-import { useEffect, useRef, useState } from "react";
-import ePub, { type Contents, type Location, type Rendition } from "epubjs";
+import { useEffect, useImperativeHandle, useRef, useState, forwardRef } from "react";
+import ePub, { type Contents, type Location, type NavItem, type Rendition } from "epubjs";
+import type Section from "epubjs/types/section";
 import { fileSrc } from "../lib/api";
 import { attachSpeakableBlocks, clearSpeakingHighlights, type SpeakSectionItem } from "../lib/tts/speakable";
-import { continuousNarrator } from "../lib/tts/narrator";
 import { ttsEngine } from "../lib/tts/engine";
-import type { Book, ReaderTheme, SelectionPayload } from "../types";
+import type { Book, ReaderOrientation, ReaderTheme, SelectionPayload, TocItem } from "../types";
 
 const THEMES: Record<ReaderTheme, Record<string, Record<string, string>>> = {
   paper: {
@@ -105,45 +105,94 @@ async function loadEpubData(path: string): Promise<ArrayBuffer> {
   return response.arrayBuffer();
 }
 
+function mapNavItems(items: NavItem[] | undefined): TocItem[] {
+  if (!items?.length) return [];
+  return items.map((item, index) => ({
+    id: item.id || `toc-${index}-${item.href}`,
+    href: item.href,
+    label: item.label?.replace(/\s+/g, " ").trim() || "Untitled",
+    subitems: mapNavItems(item.subitems),
+  }));
+}
+
+function spineFallbackToc(book: ReturnType<typeof ePub>): TocItem[] {
+  const items: TocItem[] = [];
+  book.spine.each((section: Section) => {
+    if (!section.linear) return;
+    const leaf = section.href.split("/").pop()?.split("#")[0] || section.href;
+    items.push({
+      id: section.idref || `spine-${section.index}`,
+      href: section.href,
+      label: decodeURIComponent(leaf.replace(/\.(xhtml|html|htm)$/i, "")).replace(/[-_]+/g, " "),
+    });
+  });
+  return items;
+}
+
+function applyOrientation(rendition: Rendition, orientation: ReaderOrientation) {
+  if (orientation === "vertical") {
+    rendition.flow("scrolled");
+  } else {
+    rendition.flow("paginated");
+  }
+}
+
 export type EpubReaderHandle = {
-  startListening: () => Promise<void>;
-  stopListening: () => void;
+  goTo: (href: string) => Promise<void>;
 };
 
-export function EpubReader({
-  book,
-  theme,
-  fontSize,
-  onSelection,
-  onProgress,
-  onReady,
-  onSpeakBlock,
-  onSpeakSection,
-}: {
-  book: Book;
-  theme: ReaderTheme;
-  fontSize: number;
-  onSelection: (selection: SelectionPayload | null) => void;
-  onProgress: (progress: { cfi: string; percent: number }) => void;
-  onReady?: (handle: EpubReaderHandle | null) => void;
-  onSpeakBlock?: (payload: SelectionPayload) => void;
-  onSpeakSection?: (items: SpeakSectionItem[], contents: Contents) => void;
-}) {
+export const EpubReader = forwardRef<
+  EpubReaderHandle,
+  {
+    book: Book;
+    theme: ReaderTheme;
+    fontSize: number;
+    orientation: ReaderOrientation;
+    onSelection: (selection: SelectionPayload | null) => void;
+    onProgress: (progress: { cfi: string; percent: number; href?: string }) => void;
+    onToc?: (items: TocItem[]) => void;
+    onSpeakBlock?: (payload: SelectionPayload) => void;
+    onSpeakSection?: (items: SpeakSectionItem[], contents: Contents) => void;
+  }
+>(function EpubReader(
+  {
+    book,
+    theme,
+    fontSize,
+    orientation,
+    onSelection,
+    onProgress,
+    onToc,
+    onSpeakBlock,
+    onSpeakSection,
+  },
+  ref,
+) {
   const hostRef = useRef<HTMLDivElement>(null);
   const renditionRef = useRef<Rendition | null>(null);
   const bookRef = useRef<ReturnType<typeof ePub> | null>(null);
   const onSelectionRef = useRef(onSelection);
   const onProgressRef = useRef(onProgress);
-  const onReadyRef = useRef(onReady);
+  const onTocRef = useRef(onToc);
   const onSpeakBlockRef = useRef(onSpeakBlock);
   const onSpeakSectionRef = useRef(onSpeakSection);
+  const orientationRef = useRef(orientation);
   const detachSpeakableRef = useRef<(() => void) | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   onSelectionRef.current = onSelection;
   onProgressRef.current = onProgress;
-  onReadyRef.current = onReady;
+  onTocRef.current = onToc;
   onSpeakBlockRef.current = onSpeakBlock;
   onSpeakSectionRef.current = onSpeakSection;
+  orientationRef.current = orientation;
+
+  useImperativeHandle(ref, () => ({
+    goTo: async (href: string) => {
+      const rendition = renditionRef.current;
+      if (!rendition || !href) return;
+      await rendition.display(href);
+    },
+  }));
 
   useEffect(() => {
     const host = hostRef.current;
@@ -153,6 +202,7 @@ export function EpubReader({
     let poll = 0;
 
     setLoadError(null);
+    onTocRef.current?.([]);
     host.innerHTML = "";
 
     void (async () => {
@@ -165,23 +215,29 @@ export function EpubReader({
           width: "100%",
           height: "100%",
           allowScriptedContent: false,
+          flow: orientationRef.current === "vertical" ? "scrolled" : "paginated",
         });
         renditionRef.current = rendition;
-        continuousNarrator.bind({
-          book: instance,
-          rendition,
-          title: book.title,
-          authors: book.authors.join(", "),
-        });
-        onReadyRef.current?.({
-          startListening: () => continuousNarrator.startFromCurrent(),
-          stopListening: () => continuousNarrator.stop(),
-        });
+        applyOrientation(rendition, orientationRef.current);
         (Object.keys(THEMES) as ReaderTheme[]).forEach((name) => {
           rendition.themes.register(name, THEMES[name]);
         });
         rendition.themes.select(theme);
         rendition.themes.fontSize(`${fontSize}%`);
+
+        await instance.ready;
+        if (cancelled) return;
+        let toc = mapNavItems(instance.navigation?.toc);
+        if (!toc.length) {
+          try {
+            const navigation = await instance.loaded.navigation;
+            toc = mapNavItems(navigation.toc);
+          } catch {
+            /* some EPUBs lack nav documents */
+          }
+        }
+        if (!toc.length) toc = spineFallbackToc(instance);
+        if (!cancelled) onTocRef.current?.(toc);
 
         const publishFromContents = (contents: Contents) => {
           publishSelection(contents, onSelectionRef.current);
@@ -217,6 +273,7 @@ export function EpubReader({
           onProgressRef.current({
             cfi: location.start.cfi,
             percent: location.start.percentage ?? 0,
+            href: location.start.href,
           });
         });
 
@@ -303,14 +360,13 @@ export function EpubReader({
       window.removeEventListener("keydown", onKey);
       detachSpeakableRef.current?.();
       detachSpeakableRef.current = null;
-      continuousNarrator.unbind();
-      onReadyRef.current?.(null);
+      onTocRef.current?.([]);
       renditionRef.current?.destroy();
       instance?.destroy();
       bookRef.current = null;
       renditionRef.current = null;
     };
-  }, [book.id, book.libraryPath, book.title, book.authors]);
+  }, [book.id, book.libraryPath]);
 
   useEffect(() => {
     renditionRef.current?.themes.select(theme);
@@ -319,6 +375,20 @@ export function EpubReader({
   useEffect(() => {
     renditionRef.current?.themes.fontSize(`${fontSize}%`);
   }, [fontSize]);
+
+  useEffect(() => {
+    const rendition = renditionRef.current;
+    if (!rendition) return;
+    const location = rendition.currentLocation() as
+      | { start?: { cfi?: string } }
+      | Promise<{ start?: { cfi?: string } }>
+      | undefined;
+    applyOrientation(rendition, orientation);
+    void Promise.resolve(location).then((loc) => {
+      const cfi = loc && "start" in loc ? loc.start?.cfi : undefined;
+      void rendition.display(cfi);
+    });
+  }, [orientation]);
 
   useEffect(() => {
     const unsubscribe = ttsEngine.subscribe(() => {
@@ -331,6 +401,8 @@ export function EpubReader({
     return unsubscribe;
   }, []);
 
+  const showPageButtons = orientation === "horizontal";
+
   return (
     <div className="relative h-full w-full">
       {loadError ? (
@@ -339,20 +411,24 @@ export function EpubReader({
         </p>
       ) : null}
       <div ref={hostRef} className="h-full w-full" data-epub-host />
-      <button
-        type="button"
-        className="absolute left-3 top-1/2 z-10 -translate-y-1/2 rounded-full bg-ink/70 px-3 py-2 text-sepia"
-        onClick={() => void renditionRef.current?.prev()}
-      >
-        ‹
-      </button>
-      <button
-        type="button"
-        className="absolute right-3 top-1/2 z-10 -translate-y-1/2 rounded-full bg-ink/70 px-3 py-2 text-sepia"
-        onClick={() => void renditionRef.current?.next()}
-      >
-        ›
-      </button>
+      {showPageButtons ? (
+        <>
+          <button
+            type="button"
+            className="absolute left-3 top-1/2 z-10 -translate-y-1/2 rounded-full bg-ink/70 px-3 py-2 text-sepia"
+            onClick={() => void renditionRef.current?.prev()}
+          >
+            ‹
+          </button>
+          <button
+            type="button"
+            className="absolute right-3 top-1/2 z-10 -translate-y-1/2 rounded-full bg-ink/70 px-3 py-2 text-sepia"
+            onClick={() => void renditionRef.current?.next()}
+          >
+            ›
+          </button>
+        </>
+      ) : null}
     </div>
   );
-}
+});

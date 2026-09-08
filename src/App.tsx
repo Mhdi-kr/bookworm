@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Library } from "./components/Library";
 import { Reader } from "./components/Reader";
-import { TtsBar } from "./components/TtsBar";
+import { BottomBars } from "./components/BottomBars";
 import { ttsEngine } from "./lib/tts/engine";
 import type { Book } from "./types";
 
@@ -19,7 +19,7 @@ export default function App() {
       ) : (
         <Library onOpen={setBook} />
       )}
-      <TtsBar />
+      <BottomBars />
     </div>
   );
 }
