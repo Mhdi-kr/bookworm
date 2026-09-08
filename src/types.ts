@@ -30,14 +30,6 @@ export type Locator =
   | { kind: "epub"; cfi: string }
   | { kind: "pdf"; page: number };
 
-export type Highlight = {
-  id: string;
-  bookId: string;
-  locator: Locator;
-  quote: string;
-  createdAt: number;
-};
-
 export type SelectionPayload = {
   text: string;
   locator: Locator;

@@ -3,12 +3,11 @@ use crate::db;
 use crate::enrich;
 use crate::error::AppError;
 use crate::extract;
-use crate::models::{Book, Highlight};
+use crate::models::Book;
 use crate::state::{self, AppState};
 use serde_json::Value;
 use std::fs;
 use tauri::{AppHandle, Emitter, State};
-use uuid::Uuid;
 
 #[tauri::command]
 pub fn import_book(app: AppHandle, state: State<AppState>, path: String) -> Result<Book, AppError> {
@@ -67,37 +66,6 @@ pub fn delete_book(state: State<AppState>, id: String) -> Result<(), AppError> {
 pub fn save_progress(state: State<AppState>, id: String, progress: Value) -> Result<(), AppError> {
     let conn = state.conn()?;
     db::save_progress(&conn, &id, &progress, state::now_ms())
-}
-
-#[tauri::command]
-pub fn save_highlight(
-    state: State<AppState>,
-    book_id: String,
-    locator: Value,
-    quote: String,
-) -> Result<Highlight, AppError> {
-    let highlight = Highlight {
-        id: Uuid::new_v4().to_string(),
-        book_id,
-        locator,
-        quote,
-        created_at: state::now_ms(),
-    };
-    let conn = state.conn()?;
-    db::insert_highlight(&conn, &highlight)?;
-    Ok(highlight)
-}
-
-#[tauri::command]
-pub fn list_highlights(state: State<AppState>, book_id: String) -> Result<Vec<Highlight>, AppError> {
-    let conn = state.conn()?;
-    db::list_highlights(&conn, &book_id)
-}
-
-#[tauri::command]
-pub fn delete_highlight(state: State<AppState>, id: String) -> Result<(), AppError> {
-    let conn = state.conn()?;
-    db::delete_highlight(&conn, &id)
 }
 
 #[tauri::command]

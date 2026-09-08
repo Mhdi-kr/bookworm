@@ -65,9 +65,6 @@ pub fn run() {
             commands::open_book,
             commands::delete_book,
             commands::save_progress,
-            commands::save_highlight,
-            commands::list_highlights,
-            commands::delete_highlight,
             commands::save_cover,
         ])
         .run(tauri::generate_context!())
