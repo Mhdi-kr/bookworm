@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { useSyncExternalStore } from "react";
+import { onPointerDownOutside } from "../lib/outsidePointer";
 import { ttsEngine } from "../lib/tts/engine";
 import type { ReaderOrientation, ReaderTheme } from "../types";
 
@@ -65,18 +66,15 @@ export function ReaderSettingsPopover({
 
   useEffect(() => {
     if (!open) return;
-    const onPointerDown = (event: PointerEvent) => {
-      const target = event.target as Node | null;
-      if (target && rootRef.current?.contains(target)) return;
-      setOpenState(false);
-    };
+    const root = rootRef.current;
+    if (!root) return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") setOpenState(false);
     };
-    window.addEventListener("pointerdown", onPointerDown, true);
+    const stopOutside = onPointerDownOutside(root, () => setOpenState(false));
     window.addEventListener("keydown", onKeyDown);
     return () => {
-      window.removeEventListener("pointerdown", onPointerDown, true);
+      stopOutside();
       window.removeEventListener("keydown", onKeyDown);
     };
   }, [open]);
@@ -138,7 +136,7 @@ export function ReaderSettingsPopover({
             <fieldset className="mb-3 block text-xs">
               <legend className="mb-1.5 text-sepia/70">Theme</legend>
               <div className="flex gap-1.5">
-                {(["paper", "sepia", "dark"] as ReaderTheme[]).map((name) => (
+                {(["paper", "fog", "dark"] as ReaderTheme[]).map((name) => (
                   <button
                     key={name}
                     type="button"

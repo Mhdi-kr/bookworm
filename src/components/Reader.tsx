@@ -1,21 +1,22 @@
 import { useEffect, useRef, useState } from "react";
 import { saveProgress } from "../lib/api";
+import { loadReaderSettings, saveReaderSettings } from "../lib/readerSettings";
 import { ttsEngine } from "../lib/tts/engine";
 import type { Book, ReaderOrientation, ReaderTheme, SelectionPayload, TocItem } from "../types";
 import { EpubReader, type EpubReaderHandle } from "./EpubReader";
 import { ReaderSettingsPopover } from "./ReaderSettingsPopover";
-import { SelectionMenu } from "./SelectionMenu";
 import { TocPanel } from "./TocPanel";
 import type { SpeakSectionItem } from "../lib/tts/speakable";
 import { clearBlockLoading, setBlockLoading, setSpeakingHighlight } from "../lib/tts/speakable";
 import type { Contents } from "epubjs";
 
 export function Reader({ book, onBack }: { book: Book; onBack: () => void }) {
-  const [theme, setTheme] = useState<ReaderTheme>("paper");
-  const [fontSize, setFontSize] = useState(112);
-  const [orientation, setOrientation] = useState<ReaderOrientation>("horizontal");
+  const [theme, setTheme] = useState<ReaderTheme>(() => loadReaderSettings().theme);
+  const [fontSize, setFontSize] = useState(() => loadReaderSettings().fontSize);
+  const [orientation, setOrientation] = useState<ReaderOrientation>(
+    () => loadReaderSettings().orientation,
+  );
   const [hoveringTop, setHoveringTop] = useState(false);
-  const [selection, setSelection] = useState<SelectionPayload | null>(null);
   const [tapHint, setTapHint] = useState(true);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [tocOpen, setTocOpen] = useState(false);
@@ -32,22 +33,8 @@ export function Reader({ book, onBack }: { book: Book; onBack: () => void }) {
   }, [book.id]);
 
   useEffect(() => {
-    if (!selection) return;
-    const dismiss = (event: PointerEvent) => {
-      const target = event.target as HTMLElement | null;
-      if (target?.closest?.("[data-selection-menu]")) return;
-      // Clicks inside the EPUB iframe don't bubble here — ignore.
-      if (target?.tagName === "IFRAME") return;
-      setSelection(null);
-    };
-    const timer = window.setTimeout(() => {
-      window.addEventListener("pointerdown", dismiss, true);
-    }, 500);
-    return () => {
-      window.clearTimeout(timer);
-      window.removeEventListener("pointerdown", dismiss, true);
-    };
-  }, [selection]);
+    saveReaderSettings({ theme, fontSize, orientation });
+  }, [theme, fontSize, orientation]);
 
   useEffect(() => {
     return () => ttsEngine.stop();
@@ -66,13 +53,11 @@ export function Reader({ book, onBack }: { book: Book; onBack: () => void }) {
 
   async function goToChapter(href: string) {
     ttsEngine.stop();
-    setSelection(null);
     await readerRef.current?.goTo(href);
   }
 
   async function speakSection(items: SpeakSectionItem[], contents: Contents) {
     setTapHint(false);
-    setSelection(null);
     const doc = contents.document;
     try {
       await ttsEngine.speakSequence(
@@ -97,7 +82,6 @@ export function Reader({ book, onBack }: { book: Book; onBack: () => void }) {
 
   async function speakBlock(payload: SelectionPayload) {
     setTapHint(false);
-    setSelection(null);
     await ttsEngine.speak(payload.text, {
       title: book.title,
       artist: book.authors.join(", ") || "Bookworm",
@@ -163,7 +147,6 @@ export function Reader({ book, onBack }: { book: Book; onBack: () => void }) {
           theme={theme}
           fontSize={fontSize}
           orientation={orientation}
-          onSelection={setSelection}
           onProgress={queueProgress}
           onToc={setToc}
           onSpeakBlock={(payload) => void speakBlock(payload)}
@@ -178,21 +161,6 @@ export function Reader({ book, onBack }: { book: Book; onBack: () => void }) {
             it
           </div>
         </div>
-      ) : null}
-
-      {selection ? (
-        <SelectionMenu
-          selection={selection}
-          onSpeak={() => {
-            void ttsEngine.unlockAudio().then(() =>
-              ttsEngine.speak(selection.text, {
-                title: book.title,
-                artist: book.authors.join(", ") || "Bookworm",
-              }),
-            );
-            setSelection(null);
-          }}
-        />
       ) : null}
     </div>
   );

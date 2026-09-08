@@ -9,91 +9,46 @@ import type { Book, ReaderOrientation, ReaderTheme, SelectionPayload, TocItem } 
 const THEMES: Record<ReaderTheme, Record<string, Record<string, string>>> = {
   paper: {
     body: {
-      background: "#f4ead5 !important",
-      color: "#1c140e !important",
+      background: "#eef3f0 !important",
+      color: "#14201b !important",
       "font-family": "Georgia, 'Palatino Linotype', Palatino, serif",
       "line-height": "1.7",
       padding: "0 7%",
       "-webkit-user-select": "text",
       "user-select": "text",
     },
-    p: { color: "#1c140e !important" },
-    a: { color: "#9c3b2a !important" },
+    p: { color: "#14201b !important" },
+    a: { color: "#1f6b62 !important" },
   },
-  sepia: {
+  fog: {
     body: {
-      background: "#f0dcb4 !important",
-      color: "#3b2a1a !important",
+      background: "#dfe6eb !important",
+      color: "#1a2430 !important",
       "font-family": "Georgia, 'Palatino Linotype', Palatino, serif",
       "line-height": "1.7",
       padding: "0 7%",
       "-webkit-user-select": "text",
       "user-select": "text",
     },
-    p: { color: "#3b2a1a !important" },
-    a: { color: "#9c3b2a !important" },
+    p: { color: "#1a2430 !important" },
+    a: { color: "#2a6b7c !important" },
   },
   dark: {
     body: {
-      background: "#1a1612 !important",
-      color: "#e8dcc8 !important",
+      background: "#121a17 !important",
+      color: "#d5e0db !important",
       "font-family": "Georgia, 'Palatino Linotype', Palatino, serif",
       "line-height": "1.7",
       padding: "0 7%",
       "-webkit-user-select": "text",
       "user-select": "text",
     },
-    p: { color: "#e8dcc8 !important" },
-    a: { color: "#e2c08d !important" },
+    p: { color: "#d5e0db !important" },
+    a: { color: "#8ebfb4 !important" },
   },
 };
 
 type EpubView = { contents?: Contents };
-
-function frameOffset(contents: Contents) {
-  const frame = contents.document.defaultView?.frameElement as HTMLElement | null;
-  return frame?.getBoundingClientRect();
-}
-
-function rectFromRange(range: Range, contents: Contents) {
-  const box = range.getBoundingClientRect();
-  const offset = frameOffset(contents);
-  const top = box.top + (offset?.top ?? 0);
-  const left = box.left + (offset?.left ?? 0);
-  const bottom = box.bottom + (offset?.top ?? 0);
-  if (!box.width && !box.height) {
-    return { top: 72, left: 24, bottom: 112 };
-  }
-  return { top, left, bottom };
-}
-
-function selectionFromContents(contents: Contents): SelectionPayload | null {
-  const live = contents.window.getSelection();
-  const text = live?.toString().trim() ?? "";
-  if (!text || !live || live.rangeCount === 0 || live.isCollapsed) return null;
-
-  const domRange = live.getRangeAt(0);
-  let cfi = "";
-  try {
-    cfi = contents.cfiFromRange(domRange);
-  } catch {
-    /* CFI optional — still show Speak overlay */
-  }
-
-  return {
-    text,
-    locator: { kind: "epub", cfi },
-    rect: rectFromRange(domRange, contents),
-  };
-}
-
-function publishSelection(
-  contents: Contents,
-  onSelection: (selection: SelectionPayload | null) => void,
-) {
-  const payload = selectionFromContents(contents);
-  if (payload) onSelection(payload);
-}
 
 async function loadEpubData(path: string): Promise<ArrayBuffer> {
   const src = fileSrc(path);
@@ -148,7 +103,6 @@ export const EpubReader = forwardRef<
     theme: ReaderTheme;
     fontSize: number;
     orientation: ReaderOrientation;
-    onSelection: (selection: SelectionPayload | null) => void;
     onProgress: (progress: { cfi: string; percent: number; href?: string }) => void;
     onToc?: (items: TocItem[]) => void;
     onSpeakBlock?: (payload: SelectionPayload) => void;
@@ -160,7 +114,6 @@ export const EpubReader = forwardRef<
     theme,
     fontSize,
     orientation,
-    onSelection,
     onProgress,
     onToc,
     onSpeakBlock,
@@ -171,7 +124,6 @@ export const EpubReader = forwardRef<
   const hostRef = useRef<HTMLDivElement>(null);
   const renditionRef = useRef<Rendition | null>(null);
   const bookRef = useRef<ReturnType<typeof ePub> | null>(null);
-  const onSelectionRef = useRef(onSelection);
   const onProgressRef = useRef(onProgress);
   const onTocRef = useRef(onToc);
   const onSpeakBlockRef = useRef(onSpeakBlock);
@@ -179,7 +131,6 @@ export const EpubReader = forwardRef<
   const orientationRef = useRef(orientation);
   const detachSpeakableRef = useRef<(() => void) | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
-  onSelectionRef.current = onSelection;
   onProgressRef.current = onProgress;
   onTocRef.current = onToc;
   onSpeakBlockRef.current = onSpeakBlock;
@@ -199,7 +150,6 @@ export const EpubReader = forwardRef<
     if (!host) return;
     let cancelled = false;
     let instance: ReturnType<typeof ePub> | null = null;
-    let poll = 0;
 
     setLoadError(null);
     onTocRef.current?.([]);
@@ -239,10 +189,6 @@ export const EpubReader = forwardRef<
         if (!toc.length) toc = spineFallbackToc(instance);
         if (!cancelled) onTocRef.current?.(toc);
 
-        const publishFromContents = (contents: Contents) => {
-          publishSelection(contents, onSelectionRef.current);
-        };
-
         const wireSpeakable = (view: EpubView) => {
           const contents = view.contents;
           if (!contents?.document) return;
@@ -250,12 +196,10 @@ export const EpubReader = forwardRef<
           detachSpeakableRef.current = attachSpeakableBlocks(
             contents,
             (payload) => {
-              onSelectionRef.current(null);
               onSpeakBlockRef.current?.(payload);
             },
             (text) => ttsEngine.prefetch(text),
             (items) => {
-              onSelectionRef.current(null);
               onSpeakSectionRef.current?.(items, contents);
             },
           );
@@ -277,43 +221,12 @@ export const EpubReader = forwardRef<
           });
         });
 
-        rendition.on("selected", (cfiRange: string, contents: Contents) => {
-          try {
-            const range = contents.range(cfiRange);
-            const text = range?.toString().trim() ?? "";
-            if (!text || !range) {
-              publishFromContents(contents);
-              return;
-            }
-            onSelectionRef.current({
-              text,
-              locator: { kind: "epub", cfi: cfiRange },
-              rect: rectFromRange(range, contents),
-            });
-          } catch {
-            publishFromContents(contents);
-          }
-        });
-
-        const afterPointer = (_event: Event, contents: Contents) => {
-          window.setTimeout(() => publishFromContents(contents), 30);
-        };
-        rendition.on("mouseup", afterPointer);
-        rendition.on("touchend", afterPointer);
-
         rendition.on("rendered", (_section: unknown, view: EpubView) => {
           wireSpeakable(view);
           const contents = view.contents;
           if (!contents?.document) return;
-          const doc = contents.document;
           const blockNativeMenu = (event: Event) => event.preventDefault();
-          const onUp = () => {
-            window.setTimeout(() => publishFromContents(contents), 30);
-          };
-          doc.addEventListener("contextmenu", blockNativeMenu);
-          doc.addEventListener("mouseup", onUp);
-          doc.addEventListener("touchend", onUp);
-          doc.addEventListener("pointerup", onUp);
+          contents.document.addEventListener("contextmenu", blockNativeMenu);
         });
 
         await rendition.display(book.progress?.cfi);
@@ -321,27 +234,6 @@ export const EpubReader = forwardRef<
         attachSpeakableFromRendition();
         window.setTimeout(attachSpeakableFromRendition, 150);
         window.setTimeout(attachSpeakableFromRendition, 600);
-
-        let lastText = "";
-        poll = window.setInterval(() => {
-          const iframe = host.querySelector("iframe");
-          const win = iframe?.contentWindow;
-          if (!win) return;
-          const live = win.getSelection();
-          const text = live?.toString().trim() ?? "";
-          if (!text || !live || live.rangeCount === 0 || live.isCollapsed) {
-            if (lastText) onSelectionRef.current(null);
-            lastText = "";
-            return;
-          }
-          if (text === lastText) return;
-          lastText = text;
-          const contentsList = rendition.getContents();
-          const contents = (
-            Array.isArray(contentsList) ? contentsList[0] : contentsList
-          ) as Contents | undefined;
-          if (contents) publishSelection(contents, onSelectionRef.current);
-        }, 200);
       } catch (err) {
         if (!cancelled) {
           setLoadError(err instanceof Error ? err.message : String(err));
@@ -356,7 +248,6 @@ export const EpubReader = forwardRef<
     window.addEventListener("keydown", onKey);
     return () => {
       cancelled = true;
-      window.clearInterval(poll);
       window.removeEventListener("keydown", onKey);
       detachSpeakableRef.current?.();
       detachSpeakableRef.current = null;

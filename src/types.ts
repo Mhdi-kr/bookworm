@@ -43,7 +43,7 @@ export type VoiceInfo = {
   gender: string;
 };
 
-export type ReaderTheme = "paper" | "sepia" | "dark";
+export type ReaderTheme = "paper" | "fog" | "dark";
 
 /** Horizontal = paginated pages; vertical = continuous scroll. */
 export type ReaderOrientation = "horizontal" | "vertical";

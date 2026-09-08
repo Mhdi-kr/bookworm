@@ -1,5 +1,6 @@
 import type { VoiceInfo } from "../../types";
 import { getMeta, modelCacheStats, preloadModelCacheIntoMemory, requestPersistentStorage, setMeta } from "../offline/idb";
+import { loadReaderSettings, saveReaderSettings } from "../readerSettings";
 import KokoroWorker from "./kokoro.worker.ts?worker";
 import { ttsCacheKey } from "./split";
 import { encodeWav } from "./wav";
@@ -26,6 +27,8 @@ export type SpeakSequenceCallbacks = {
   /** Fired when the next block starts synthesizing (preload). */
   onBlockLoading?: (index: number) => void;
 };
+
+const initialSpeechPrefs = loadReaderSettings();
 
 /**
  * Kokoro TTS playback: Web Audio for reliable output, HTMLAudio fallback for
@@ -67,8 +70,8 @@ export class TtsEngine {
   status: Status = "idle";
   error: string | null = null;
   voices: VoiceInfo[] = [];
-  voice = "af_heart";
-  speed = 1;
+  voice = initialSpeechPrefs.voice;
+  speed = initialSpeechPrefs.speed;
   currentText = "";
   downloadLabel = "";
   offlineReady = false;
@@ -228,7 +231,6 @@ export class TtsEngine {
     this.currentText = trimmed;
     this.error = null;
     if (meta) this.setMediaMeta(meta);
-    this.emit();
 
     const result = new Promise<boolean>((resolve) => {
       this.waiters.set(generation, resolve);
@@ -237,6 +239,7 @@ export class TtsEngine {
     if (!this.workerReady) {
       this.pendingText = trimmed;
       this.pendingMeta = meta ?? null;
+      // Emit only after leaving ready/idle — otherwise the reader clears the speaking highlight.
       if (this.status !== "loading") {
         this.status = "loading";
         this.emit();
@@ -276,7 +279,6 @@ export class TtsEngine {
     this.currentText = trimmed[0];
     this.error = null;
     if (meta) this.setMediaMeta(meta);
-    this.emit();
 
     const result = new Promise<boolean>((resolve) => {
       this.waiters.set(generation, resolve);
@@ -349,11 +351,13 @@ export class TtsEngine {
 
   setVoice(voice: string) {
     this.voice = voice;
+    saveReaderSettings({ voice });
     this.emit();
   }
 
   setSpeed(speed: number) {
     this.speed = speed;
+    saveReaderSettings({ speed });
     this.emit();
   }
 
