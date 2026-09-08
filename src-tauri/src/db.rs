@@ -1,5 +1,5 @@
 use crate::error::AppError;
-use crate::models::{Book, Highlight};
+use crate::models::Book;
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde_json::Value;
 use std::path::Path;
@@ -28,14 +28,7 @@ pub fn init(path: &Path) -> Result<Connection, AppError> {
             updated_at INTEGER NOT NULL,
             progress TEXT
         );
-        CREATE TABLE IF NOT EXISTS highlights (
-            id TEXT PRIMARY KEY,
-            book_id TEXT NOT NULL,
-            locator TEXT NOT NULL,
-            quote TEXT NOT NULL,
-            created_at INTEGER NOT NULL,
-            FOREIGN KEY(book_id) REFERENCES books(id) ON DELETE CASCADE
-        );
+        DROP TABLE IF EXISTS highlights;
         "#,
     )?;
     Ok(conn)
@@ -154,7 +147,6 @@ pub fn list_books(conn: &Connection) -> Result<Vec<Book>, AppError> {
 }
 
 pub fn delete_book(conn: &Connection, id: &str) -> Result<(), AppError> {
-    conn.execute("DELETE FROM highlights WHERE book_id = ?1", [id])?;
     conn.execute("DELETE FROM books WHERE id = ?1", [id])?;
     Ok(())
 }
@@ -175,50 +167,10 @@ pub fn touch_opened(conn: &Connection, id: &str, opened_at: i64) -> Result<(), A
     Ok(())
 }
 
-pub fn insert_highlight(conn: &Connection, highlight: &Highlight) -> Result<(), AppError> {
-    conn.execute(
-        "INSERT INTO highlights (id, book_id, locator, quote, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
-        params![
-            highlight.id,
-            highlight.book_id,
-            highlight.locator.to_string(),
-            highlight.quote,
-            highlight.created_at,
-        ],
-    )?;
-    Ok(())
-}
-
-fn highlight_from_row(row: &Row<'_>) -> rusqlite::Result<Highlight> {
-    let locator: String = row.get("locator")?;
-    Ok(Highlight {
-        id: row.get("id")?,
-        book_id: row.get("book_id")?,
-        locator: serde_json::from_str(&locator).unwrap_or(Value::Null),
-        quote: row.get("quote")?,
-        created_at: row.get("created_at")?,
-    })
-}
-
-pub fn list_highlights(conn: &Connection, book_id: &str) -> Result<Vec<Highlight>, AppError> {
-    let mut stmt =
-        conn.prepare("SELECT * FROM highlights WHERE book_id = ?1 ORDER BY created_at DESC")?;
-    let highlights = stmt
-        .query_map([book_id], highlight_from_row)?
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok(highlights)
-}
-
-pub fn delete_highlight(conn: &Connection, id: &str) -> Result<(), AppError> {
-    conn.execute("DELETE FROM highlights WHERE id = ?1", [id])?;
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::models::Book;
-    use crate::state;
     use serde_json::json;
 
     fn sample_book(id: &str) -> Book {
@@ -244,27 +196,13 @@ mod tests {
     }
 
     #[test]
-    fn stores_progress_and_highlights() {
+    fn stores_progress() {
         let path = std::env::temp_dir().join(format!("bookworm-db-{}.sqlite", uuid::Uuid::new_v4()));
         let conn = init(&path).unwrap();
         insert_book(&conn, &sample_book("b1")).unwrap();
         save_progress(&conn, "b1", &json!({"cfi": "epubcfi(/6/2)", "percent": 0.4}), 2).unwrap();
         let book = get_book(&conn, "b1").unwrap().unwrap();
         assert_eq!(book.progress.unwrap()["percent"], 0.4);
-
-        let highlight = crate::models::Highlight {
-            id: "h1".into(),
-            book_id: "b1".into(),
-            locator: json!({"kind": "epub", "cfi": "epubcfi(/6/2)"}),
-            quote: "Speak this".into(),
-            created_at: state::now_ms(),
-        };
-        insert_highlight(&conn, &highlight).unwrap();
-        let listed = list_highlights(&conn, "b1").unwrap();
-        assert_eq!(listed.len(), 1);
-        assert_eq!(listed[0].quote, "Speak this");
-        delete_highlight(&conn, "h1").unwrap();
-        assert!(list_highlights(&conn, "b1").unwrap().is_empty());
     }
 }
 

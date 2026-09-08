@@ -22,13 +22,3 @@ pub struct Book {
     pub updated_at: i64,
     pub progress: Option<Value>,
 }
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Highlight {
-    pub id: String,
-    pub book_id: String,
-    pub locator: Value,
-    pub quote: String,
-    pub created_at: i64,
-}

@@ -1,7 +1,7 @@
 import { convertFileSrc, invoke, isTauri } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
-import type { Book, Highlight, Locator } from "../types";
+import type { Book } from "../types";
 import {
   deleteStoredBook,
   getStoredBook,
@@ -206,29 +206,6 @@ export async function saveProgress(id: string, progress: Book["progress"]) {
     return;
   }
   return invoke<void>("save_progress", { id, progress });
-}
-
-export async function saveHighlight(bookId: string, locator: Locator, quote: string) {
-  if (!isTauri()) {
-    return {
-      id: crypto.randomUUID(),
-      bookId,
-      locator,
-      quote,
-      createdAt: Date.now(),
-    } satisfies Highlight;
-  }
-  return invoke<Highlight>("save_highlight", { bookId, locator, quote });
-}
-
-export async function listHighlights(_bookId: string) {
-  if (!isTauri()) return [];
-  return invoke<Highlight[]>("list_highlights", { bookId: _bookId });
-}
-
-export async function deleteHighlight(id: string) {
-  if (!isTauri()) return;
-  return invoke<void>("delete_highlight", { id });
 }
 
 export async function saveCover(id: string, bytes: Uint8Array, source: string) {

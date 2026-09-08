@@ -1,13 +1,13 @@
 # Bookworm
 
-A native Tauri reader for PDF and EPUB books. Import a file, keep its metadata and cover in a local library, read in a paper-like UI, and speak selected or highlighted text with Kokoro TTS.
+A native Tauri reader for PDF and EPUB books. Import a file, keep its metadata and cover in a local library, read in a paper-like UI, and speak selected text with Kokoro TTS.
 
 ## Features
 
 - Import PDF / EPUB into a local SQLite library
 - Extract file metadata and covers, then enrich from Open Library / Google Books
-- EPUB and PDF readers with themes, progress, and saved highlights
-- Kokoro TTS (local ONNX via `kokoro-js`) for selected or highlighted text
+- EPUB and PDF readers with themes and progress
+- Kokoro TTS (local ONNX via `kokoro-js`) for selected text
 
 ## Run
 

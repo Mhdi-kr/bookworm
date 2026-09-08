@@ -1,10 +1,9 @@
 import { useEffect, useRef, useState } from "react";
-import { deleteHighlight, listHighlights, saveHighlight, saveProgress } from "../lib/api";
+import { saveProgress } from "../lib/api";
 import { continuousNarrator } from "../lib/tts/narrator";
 import { ttsEngine } from "../lib/tts/engine";
-import type { Book, Highlight, ReaderTheme, SelectionPayload } from "../types";
+import type { Book, ReaderTheme, SelectionPayload } from "../types";
 import { EpubReader, type EpubReaderHandle } from "./EpubReader";
-import { HighlightsPanel } from "./HighlightsPanel";
 import { SelectionMenu } from "./SelectionMenu";
 import type { SpeakSectionItem } from "../lib/tts/speakable";
 import { setSpeakingHighlight } from "../lib/tts/speakable";
@@ -15,16 +14,10 @@ export function Reader({ book, onBack }: { book: Book; onBack: () => void }) {
   const [fontSize, setFontSize] = useState(112);
   const [idle, setIdle] = useState(false);
   const [selection, setSelection] = useState<SelectionPayload | null>(null);
-  const [highlights, setHighlights] = useState<Highlight[]>([]);
-  const [showHighlights, setShowHighlights] = useState(false);
   const [listening, setListening] = useState(false);
   const [tapHint, setTapHint] = useState(true);
   const progressTimer = useRef<number | null>(null);
   const readerHandle = useRef<EpubReaderHandle | null>(null);
-
-  useEffect(() => {
-    void listHighlights(book.id).then(setHighlights).catch(() => setHighlights([]));
-  }, [book.id]);
 
   useEffect(() => {
     const unsubscribe = continuousNarrator.subscribe(() => {
@@ -79,13 +72,6 @@ export function Reader({ book, onBack }: { book: Book; onBack: () => void }) {
     }, 700);
   }
 
-  async function highlightSelection() {
-    if (!selection || selection.locator.kind !== "epub" || !selection.locator.cfi) return;
-    const saved = await saveHighlight(book.id, selection.locator, selection.text);
-    setHighlights((current) => [saved, ...current]);
-    setSelection(null);
-  }
-
   async function speakSection(items: SpeakSectionItem[], contents: Contents) {
     setTapHint(false);
     continuousNarrator.stop();
@@ -120,7 +106,7 @@ export function Reader({ book, onBack }: { book: Book; onBack: () => void }) {
     await readerHandle.current?.startListening();
   }
 
-  const chromeHidden = idle && !selection && !showHighlights && !listening;
+  const chromeHidden = idle && !selection && !listening;
 
   return (
     <div className="relative h-full overflow-hidden bg-paper">
@@ -157,7 +143,6 @@ export function Reader({ book, onBack }: { book: Book; onBack: () => void }) {
               {name}
             </button>
           ))}
-          <button onClick={() => setShowHighlights((value) => !value)}>Highlights</button>
         </div>
       </div>
 
@@ -198,28 +183,8 @@ export function Reader({ book, onBack }: { book: Book; onBack: () => void }) {
             );
             setSelection(null);
           }}
-          onHighlight={() => void highlightSelection()}
         />
       ) : null}
-
-      <HighlightsPanel
-        open={showHighlights}
-        highlights={highlights}
-        onClose={() => setShowHighlights(false)}
-        onSpeak={(highlight) => {
-          continuousNarrator.stop();
-          void ttsEngine.unlockAudio().then(() =>
-            ttsEngine.speak(highlight.quote, {
-              title: book.title,
-              artist: book.authors.join(", ") || "Bookworm",
-            }),
-          );
-        }}
-        onDelete={(id) => {
-          void deleteHighlight(id);
-          setHighlights((current) => current.filter((item) => item.id !== id));
-        }}
-      />
     </div>
   );
 }
