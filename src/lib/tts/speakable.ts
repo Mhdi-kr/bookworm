@@ -42,7 +42,7 @@ const SPEAKABLE_STYLE = `
   padding: 0.2em 0.45em 0.2em 2.35em !important;
   margin: 0.2em 0 !important;
   transition: background 0.15s ease !important;
-  -webkit-tap-highlight-color: rgba(156, 59, 42, 0.15) !important;
+  -webkit-tap-highlight-color: rgba(31, 107, 98, 0.15) !important;
 }
 .${SPEAKABLE_CLASS}::before {
   content: "" !important;
@@ -52,7 +52,7 @@ const SPEAKABLE_STYLE = `
   bottom: 0.15em !important;
   width: 3px !important;
   border-radius: 2px !important;
-  background: rgba(156, 59, 42, 0.85) !important;
+  background: rgba(31, 107, 98, 0.85) !important;
   opacity: 0 !important;
   transition: opacity 0.15s ease !important;
 }
@@ -63,30 +63,40 @@ const SPEAKABLE_STYLE = `
   display: flex !important;
   align-items: center !important;
   justify-content: center !important;
+  box-sizing: border-box !important;
   width: 1.35em !important;
   height: 1.35em !important;
-  font-size: 0.68em !important;
-  font-weight: bold !important;
-  color: #9c3b2a !important;
-  background: rgba(156, 59, 42, 0.14) !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  color: #1f6b62 !important;
+  background: rgba(31, 107, 98, 0.14) !important;
   border-radius: 999px !important;
   pointer-events: none !important;
   user-select: none !important;
   opacity: 0 !important;
   transition: opacity 0.15s ease !important;
+  font-size: 1em !important;
+  line-height: 1 !important;
 }
 .${PLAY_BTN_CLASS}::before {
-  content: "▶" !important;
+  content: "" !important;
   display: block !important;
-  line-height: 1 !important;
-  /* Optical center: play glyphs sit slightly left in the em box */
-  margin-left: 0.06em !important;
+  width: 0 !important;
+  height: 0 !important;
+  /* CSS triangle — no font metrics to fight */
+  border-style: solid !important;
+  border-width: 0.2em 0 0.2em 0.34em !important;
+  border-color: transparent transparent transparent currentColor !important;
+  /* Optical: right-pointing triangles read centered with a slight nudge */
+  margin: 0 0 0 0.08em !important;
+  transform: none !important;
+  background: none !important;
 }
 .${SPEAKABLE_CLASS}:hover,
 .${SPEAKABLE_CLASS}:focus-visible,
 .${SPEAKABLE_CLASS}:active,
 .${SPEAKING_CLASS} {
-  background: rgba(156, 59, 42, 0.1) !important;
+  background: rgba(31, 107, 98, 0.1) !important;
 }
 .${SPEAKABLE_CLASS}:hover::before,
 .${SPEAKABLE_CLASS}:focus-visible::before,
@@ -102,12 +112,12 @@ const SPEAKABLE_STYLE = `
   opacity: 1 !important;
 }
 .${SPEAKING_CLASS} {
-  background: rgba(156, 59, 42, 0.2) !important;
-  outline: 2px solid rgba(156, 59, 42, 0.3) !important;
+  background: rgba(31, 107, 98, 0.2) !important;
+  outline: 2px solid rgba(31, 107, 98, 0.3) !important;
   outline-offset: 2px !important;
 }
 .${SPEAKING_CLASS}::before {
-  background: rgba(156, 59, 42, 1) !important;
+  background: rgba(31, 107, 98, 1) !important;
 }
 .${LOADING_CLASS} .${PLAY_BTN_CLASS} {
   animation: bookworm-spin 0.7s linear infinite !important;
@@ -115,12 +125,16 @@ const SPEAKABLE_STYLE = `
 .${LOADING_CLASS} .${PLAY_BTN_CLASS}::before {
   content: "" !important;
   box-sizing: border-box !important;
-  width: 0.7em !important;
-  height: 0.7em !important;
+  width: 0.55em !important;
+  height: 0.55em !important;
   margin: 0 !important;
-  border: 2px solid rgba(156, 59, 42, 0.25) !important;
-  border-top-color: #9c3b2a !important;
+  border-style: solid !important;
+  border-width: 2px !important;
+  border-color: rgba(31, 107, 98, 0.25) !important;
+  border-top-color: #1f6b62 !important;
   border-radius: 50% !important;
+  transform: none !important;
+  background: none !important;
 }
 @keyframes bookworm-spin {
   from {

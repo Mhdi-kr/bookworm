@@ -9,8 +9,12 @@ const root = path.dirname(fileURLToPath(import.meta.url));
 
 // @ts-expect-error process is a nodejs global
 const host = process.env.TAURI_DEV_HOST;
+// GitHub Pages project sites need a subpath (e.g. /bookworm/). Tauri/dev stay at /.
+// @ts-expect-error process is a nodejs global
+const base = process.env.BASE_PATH || "/";
 
 export default defineConfig(async () => ({
+  base,
   plugins: [
     react(),
     tailwindcss(),
@@ -22,8 +26,8 @@ export default defineConfig(async () => ({
         name: "Bookworm",
         short_name: "Bookworm",
         description: "Private EPUB library with on-device speech",
-        theme_color: "#9c3b2a",
-        background_color: "#ebe1d0",
+        theme_color: "#1f6b62",
+        background_color: "#e3e9e6",
         display: "standalone",
         start_url: "/",
         icons: [

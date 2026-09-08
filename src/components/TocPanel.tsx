@@ -1,4 +1,5 @@
 import { useEffect, useId, useRef } from "react";
+import { onPointerDownOutside } from "../lib/outsidePointer";
 import type { TocItem } from "../types";
 
 function ListIcon() {
@@ -95,18 +96,15 @@ export function TocPanel({
 
   useEffect(() => {
     if (!open) return;
-    const onPointerDown = (event: PointerEvent) => {
-      const target = event.target as Node | null;
-      if (target && rootRef.current?.contains(target)) return;
-      onOpenChange(false);
-    };
+    const root = rootRef.current;
+    if (!root) return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") onOpenChange(false);
     };
-    window.addEventListener("pointerdown", onPointerDown, true);
+    const stopOutside = onPointerDownOutside(root, () => onOpenChange(false));
     window.addEventListener("keydown", onKeyDown);
     return () => {
-      window.removeEventListener("pointerdown", onPointerDown, true);
+      stopOutside();
       window.removeEventListener("keydown", onKeyDown);
     };
   }, [open, onOpenChange]);

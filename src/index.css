@@ -5,14 +5,15 @@
 @theme {
   --font-serif: "Literata Variable", Literata, Georgia, serif;
   --font-sans: "Source Sans 3 Variable", "Source Sans 3", sans-serif;
-  --color-paper: #ebe1d0;
-  --color-paper-deep: #d9ccb6;
-  --color-ink: #1c140e;
-  --color-ink-soft: #5c4e3d;
-  --color-oxblood: #9c3b2a;
-  --color-oxblood-dark: #7a2c20;
-  --color-gold: #c4a574;
-  --color-sepia: #f3e6c8;
+  /* Cool spruce desk — deliberately not cream/terracotta */
+  --color-paper: #e3e9e6;
+  --color-paper-deep: #c5d0cb;
+  --color-ink: #14201b;
+  --color-ink-soft: #4a5a53;
+  --color-oxblood: #1f6b62;
+  --color-oxblood-dark: #16564f;
+  --color-gold: #7aa396;
+  --color-sepia: #e8f0ed;
 }
 
 html,
@@ -29,13 +30,13 @@ body {
 }
 
 .paper-grain {
-  background-color: #ebe1d0;
-  background-image: radial-gradient(rgba(28, 20, 14, 0.045) 0.6px, transparent 0.6px);
+  background-color: #e3e9e6;
+  background-image: radial-gradient(rgba(20, 32, 27, 0.05) 0.6px, transparent 0.6px);
   background-size: 3px 3px;
 }
 
 .cover-shadow {
   box-shadow:
-    0 18px 40px rgb(28 20 14 / 0.22),
+    0 18px 40px rgb(20 32 27 / 0.22),
     0 2px 0 rgb(255 255 255 / 0.2) inset;
 }
