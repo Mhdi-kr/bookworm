@@ -41,6 +41,8 @@ export default defineConfig(async () => ({
       },
       workbox: {
         globPatterns: ["**/*.{js,css,html,ico,svg,woff2,epub,wasm}"],
+        // kokoro.web.js is ~2.1 MiB; default precache cap is 2 MiB
+        maximumFileSizeToCacheInBytes: 3 * 1024 * 1024,
         navigateFallback: "index.html",
         runtimeCaching: [
           {
