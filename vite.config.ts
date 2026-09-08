@@ -29,7 +29,7 @@ export default defineConfig(async () => ({
         theme_color: "#1f6b62",
         background_color: "#e3e9e6",
         display: "standalone",
-        start_url: "/",
+        start_url: "./",
         icons: [
           {
             src: "tauri.svg",
@@ -45,23 +45,10 @@ export default defineConfig(async () => ({
         maximumFileSizeToCacheInBytes: 3 * 1024 * 1024,
         navigateFallback: "index.html",
         runtimeCaching: [
-          {
-            urlPattern: ({ url }) =>
-              /huggingface\.co$|\.huggingface\.co$|\.hf\.co$|cdn-lfs|xethub\.hf\.co|jsdelivr\.net|unpkg\.com/.test(
-                url.hostname,
-              ),
-            handler: "CacheFirst",
-            options: {
-              cacheName: "bookworm-model-cdn",
-              expiration: {
-                maxEntries: 80,
-                maxAgeSeconds: 60 * 60 * 24 * 365,
-              },
-              cacheableResponse: {
-                statuses: [0, 200],
-              },
-            },
-          },
+          // Do NOT CacheFirst Hugging Face / LFS model files in the service worker.
+          // Those are 90–300MB; Safari's Cache API + clone races hang first download
+          // (UI freezes on "Downloading Kokoro tokenizer.json"). Offline models go
+          // through IndexedDB via installModelFetchCache instead.
           {
             urlPattern: ({ request }) => request.destination === "font",
             handler: "CacheFirst",
