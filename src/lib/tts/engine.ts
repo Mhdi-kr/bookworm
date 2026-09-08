@@ -13,6 +13,8 @@ type ProgressInfo = {
   status?: string;
   file?: string;
   progress?: number;
+  loaded?: number;
+  total?: number;
 };
 
 type MediaMeta = {
@@ -611,15 +613,23 @@ export class TtsEngine {
     message?: string;
   }) {
     if (data.type === "progress") {
+      const file = data.progress?.file ? ` ${data.progress.file}` : "";
+      const rawPct = data.progress?.progress;
+      // transformers reports 0–100; guard against a 0–1 fraction if a caller slips through
+      const pct =
+        typeof rawPct === "number"
+          ? Math.round(rawPct > 0 && rawPct <= 1 ? rawPct * 100 : Math.min(100, Math.max(0, rawPct)))
+          : null;
+      const pctLabel = pct !== null ? ` ${pct}%` : "";
+
       if (data.progress?.status === "cache") {
-        this.downloadLabel = `Using cached ${data.progress.file ?? "model"}`;
+        this.downloadLabel = `Using cached${file}${pctLabel}`;
+      } else if (data.progress?.status === "done") {
+        this.downloadLabel = pct !== null && pct < 100 ? `Downloading Kokoro${pctLabel}` : `Loaded Kokoro${file}`;
+      } else if (data.progress?.status === "initiate") {
+        this.downloadLabel = `Starting Kokoro${file}…`;
       } else {
-        const file = data.progress?.file ? ` ${data.progress.file}` : "";
-        const pct =
-          typeof data.progress?.progress === "number"
-            ? ` ${Math.round(data.progress.progress)}%`
-            : "";
-        this.downloadLabel = `Downloading Kokoro${file}${pct}`;
+        this.downloadLabel = `Downloading Kokoro${pctLabel || file}`;
       }
       this.emit();
       return;

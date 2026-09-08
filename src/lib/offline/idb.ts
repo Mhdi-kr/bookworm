@@ -209,17 +209,21 @@ export async function installModelFetchCache(options?: {
 
     options?.onCacheMiss?.(url);
     const response = await original(input as RequestInfo, init);
+    // Return immediately so transformers can stream progress. Safari especially
+    // stalls if we await clone().arrayBuffer() on 100–300MB ONNX bodies first.
     if (response.ok) {
-      try {
-        const clone = response.clone();
-        const buffer = await clone.arrayBuffer();
-        const contentType = response.headers.get("Content-Type") || "application/octet-stream";
-        const blob = new Blob([buffer], { type: contentType });
-        await putModelFile(url, blob, contentType);
-        options?.onCached?.(url, buffer.byteLength);
-      } catch {
-        /* caching is best-effort */
-      }
+      const clone = response.clone();
+      void (async () => {
+        try {
+          const buffer = await clone.arrayBuffer();
+          const contentType = response.headers.get("Content-Type") || "application/octet-stream";
+          const blob = new Blob([buffer], { type: contentType });
+          await putModelFile(url, blob, contentType);
+          options?.onCached?.(url, buffer.byteLength);
+        } catch {
+          /* caching is best-effort */
+        }
+      })();
     }
     return response;
   };

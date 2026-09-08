@@ -49,7 +49,99 @@ let cacheReady = false;
 let prefetchSlot: PrefetchSlot | null = null;
 let activePrefetchId = 0;
 
-const WEBGPU_LOAD_TIMEOUT_MS = 90_000;
+const WEBGPU_ADAPTER_TIMEOUT_MS = 5_000;
+
+/** Approximate sizes when Content-Length is missing (HF LFS redirects). */
+const KNOWN_FILE_BYTES: Record<string, number> = {
+  "model_quantized.onnx": 92 * 1024 * 1024,
+  "model.onnx": 325 * 1024 * 1024,
+  "tokenizer.json": 3.5 * 1024,
+  "tokenizer_config.json": 128,
+  "config.json": 2 * 1024,
+  "voices.bin": 14 * 1024 * 1024,
+};
+
+type FileByteProgress = { loaded: number; total: number };
+
+function fileBaseName(path: string): string {
+  return path.split("/").pop() || path;
+}
+
+function estimateTotal(file: string, reported: number): number {
+  if (reported > 0) return reported;
+  const base = fileBaseName(file);
+  return KNOWN_FILE_BYTES[base] ?? 0;
+}
+
+/** Aggregate multi-file download progress into a single 0–100 percentage. */
+function createProgressAggregator() {
+  const files = new Map<string, FileByteProgress>();
+  let lastPostedPct = -1;
+  let lastPostedAt = 0;
+
+  function overallPct(): number | null {
+    let loaded = 0;
+    let total = 0;
+    for (const entry of files.values()) {
+      loaded += entry.loaded;
+      total += entry.total > 0 ? entry.total : entry.loaded;
+    }
+    if (total <= 0) return null;
+    return Math.min(100, Math.max(0, (loaded / total) * 100));
+  }
+
+  function track(progress: {
+    status?: string;
+    file?: string;
+    progress?: number;
+    loaded?: number;
+    total?: number;
+  }) {
+    const file = progress.file;
+    if (!file) return { overall: overallPct(), file: undefined as string | undefined };
+
+    const key = fileBaseName(file);
+    const prev = files.get(key) ?? { loaded: 0, total: 0 };
+
+    if (progress.status === "initiate" || progress.status === "download") {
+      files.set(key, {
+        loaded: 0,
+        total: estimateTotal(file, progress.total ?? prev.total),
+      });
+    } else if (progress.status === "progress") {
+      const loaded = typeof progress.loaded === "number" ? progress.loaded : prev.loaded;
+      let total = estimateTotal(file, progress.total ?? prev.total);
+      const known = KNOWN_FILE_BYTES[key];
+      // hub.js without Content-Length sets total === loaded every chunk → fake 100%.
+      if (known && loaded < known && (total <= loaded || total === 0)) {
+        total = known;
+      } else if (total < loaded) {
+        total = loaded;
+      }
+      files.set(key, { loaded, total });
+    } else if (progress.status === "done" || progress.status === "cache") {
+      const total = Math.max(prev.total, prev.loaded, estimateTotal(file, 0));
+      files.set(key, { loaded: total, total });
+    }
+
+    return { overall: overallPct(), file: key };
+  }
+
+  function shouldPost(pct: number | null): boolean {
+    const now = Date.now();
+    if (pct === null) return true;
+    const rounded = Math.round(pct);
+    if (rounded === lastPostedPct && now - lastPostedAt < 200) return false;
+    if (rounded !== 100 && Math.abs(rounded - lastPostedPct) < 1 && now - lastPostedAt < 150) {
+      return false;
+    }
+    lastPostedPct = rounded;
+    lastPostedAt = now;
+    return true;
+  }
+
+  return { track, shouldPost };
+}
 
 function enqueueSpeak(task: () => Promise<void>) {
   speakChain = speakChain.then(task).catch(() => {});
@@ -75,8 +167,15 @@ function postChunk(
   );
 }
 
+function isSafariLike(): boolean {
+  const ua = self.navigator?.userAgent ?? "";
+  // Safari / iOS WebKit (exclude Chromium which also contains "Safari")
+  return /Safari/i.test(ua) && !/Chrome|Chromium|CriOS|Edg|Firefox|FxiOS/i.test(ua);
+}
+
 async function loadTts(device: "webgpu" | "wasm") {
   const { KokoroTTS } = await import("kokoro-js");
+  const aggregator = createProgressAggregator();
   return KokoroTTS.from_pretrained("onnx-community/Kokoro-82M-v1.0-ONNX", {
     dtype: device === "webgpu" ? "fp32" : "q8",
     device,
@@ -84,44 +183,90 @@ async function loadTts(device: "webgpu" | "wasm") {
       status?: string;
       file?: string;
       progress?: number;
+      loaded?: number;
+      total?: number;
     }) => {
-      const pct = progress.progress;
-      if (typeof pct === "number" && pct < 100 && Math.floor(pct) % 5 !== 0) {
-        return;
-      }
-      self.postMessage({ type: "progress", progress });
+      const { overall, file } = aggregator.track(progress);
+      if (!aggregator.shouldPost(overall) && progress.status === "progress") return;
+      const status =
+        progress.status === "done"
+          ? "done"
+          : progress.status === "initiate"
+            ? "initiate"
+            : progress.status === "cache"
+              ? "cache"
+              : "download";
+      self.postMessage({
+        type: "progress",
+        progress: {
+          status,
+          file: file ?? progress.file,
+          progress: overall ?? progress.progress,
+          loaded: progress.loaded,
+          total: progress.total,
+        },
+      });
     },
   });
 }
 
-async function tryWebGpuWithTimeout() {
-  return Promise.race([
-    loadTts("webgpu"),
-    new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error("webgpu-timeout")), WEBGPU_LOAD_TIMEOUT_MS);
-    }),
-  ]);
+/** Cheap probe — do not wrap the 300MB+ model download in a short timeout. */
+async function webGpuAdapterAvailable(): Promise<boolean> {
+  // WorkerNavigator.gpu typings vary by TS lib; probe at runtime.
+  const gpu = (self.navigator as unknown as { gpu?: { requestAdapter: () => Promise<unknown> } })
+    ?.gpu;
+  if (!gpu) return false;
+  try {
+    const adapter = await Promise.race([
+      gpu.requestAdapter(),
+      new Promise<null>((resolve) => {
+        setTimeout(() => resolve(null), WEBGPU_ADAPTER_TIMEOUT_MS);
+      }),
+    ]);
+    return adapter != null;
+  } catch {
+    return false;
+  }
 }
 
 async function initTts(preferred?: "webgpu" | "wasm"): Promise<"webgpu" | "wasm"> {
-  if ("gpu" in navigator) {
+  // Safari WebGPU + fp32 (~325MB) is unreliable; prefer quantized WASM unless
+  // the user already succeeded with WebGPU on this device.
+  if (preferred === "wasm" || (preferred !== "webgpu" && isSafariLike())) {
+    self.postMessage({
+      type: "progress",
+      progress: { status: "initiate", file: "CPU · WASM" },
+    });
+    tts = await loadTts("wasm");
+    return "wasm";
+  }
+
+  const canWebGpu = preferred === "webgpu" || (await webGpuAdapterAvailable());
+  if (canWebGpu) {
     try {
-      tts = await tryWebGpuWithTimeout();
+      self.postMessage({
+        type: "progress",
+        progress: { status: "initiate", file: "GPU · WebGPU" },
+      });
+      // No wall-clock timeout around from_pretrained — first GitHub Pages fetch of
+      // model.onnx is ~325MB and routinely exceeds 90s, which used to false-fallback to WASM.
+      tts = await loadTts("webgpu");
       return "webgpu";
-    } catch {
+    } catch (error) {
+      console.warn("[tts] WebGPU init failed, falling back to WASM", error);
+      self.postMessage({
+        type: "progress",
+        progress: { status: "initiate", file: "CPU · WASM (WebGPU failed)" },
+      });
       tts = await loadTts("wasm");
       return "wasm";
     }
   }
-  if (preferred === "webgpu") {
-    try {
-      tts = await tryWebGpuWithTimeout();
-      return "webgpu";
-    } catch {
-      tts = await loadTts("wasm");
-      return "wasm";
-    }
-  }
+
+  self.postMessage({
+    type: "progress",
+    progress: { status: "initiate", file: "CPU · WASM" },
+  });
   tts = await loadTts("wasm");
   return "wasm";
 }
