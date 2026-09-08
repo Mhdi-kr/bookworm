@@ -44,3 +44,13 @@ export type VoiceInfo = {
 };
 
 export type ReaderTheme = "paper" | "sepia" | "dark";
+
+/** Horizontal = paginated pages; vertical = continuous scroll. */
+export type ReaderOrientation = "horizontal" | "vertical";
+
+export type TocItem = {
+  id: string;
+  href: string;
+  label: string;
+  subitems?: TocItem[];
+};

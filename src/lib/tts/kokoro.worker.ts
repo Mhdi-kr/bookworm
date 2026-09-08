@@ -59,6 +59,7 @@ function postChunk(
   generation: number,
   text: string,
   raw: { audio: ArrayLike<number>; sampling_rate: number },
+  blockIndex?: number,
 ) {
   const audio = new Float32Array(raw.audio);
   self.postMessage(
@@ -68,6 +69,7 @@ function postChunk(
       text,
       sampleRate: raw.sampling_rate,
       audio,
+      ...(blockIndex !== undefined ? { blockIndex } : {}),
     },
     { transfer: [audio.buffer] },
   );
@@ -176,6 +178,12 @@ async function speakSequencePipelined(
     if (runId !== speakRunId || activeGeneration !== generation) return;
     const chunks = await nextPromise;
     if (blockIndex + 1 < texts.length) {
+      // Signal that the next block is synthesizing while current audio plays.
+      self.postMessage({
+        type: "blockLoading",
+        generation,
+        blockIndex: blockIndex + 1,
+      });
       nextPromise = synthesizeBlock(texts[blockIndex + 1], voice, speed);
     }
     self.postMessage({
@@ -186,10 +194,15 @@ async function speakSequencePipelined(
     });
     for (const chunk of chunks) {
       if (runId !== speakRunId || activeGeneration !== generation) return;
-      postChunk(generation, chunk.text, {
-        audio: chunk.audio,
-        sampling_rate: chunk.sampleRate,
-      });
+      postChunk(
+        generation,
+        chunk.text,
+        {
+          audio: chunk.audio,
+          sampling_rate: chunk.sampleRate,
+        },
+        blockIndex,
+      );
     }
   }
 }
