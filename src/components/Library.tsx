@@ -3,7 +3,6 @@ import {
   deleteBook,
   importBooks,
   listBooks,
-  onBookEnriched,
   openBook,
 } from "../lib/api";
 import type { Book } from "../types";
@@ -21,14 +20,6 @@ export function Library({ onOpen }: { onOpen: (book: Book) => void }) {
 
   useEffect(() => {
     void refresh().catch((err) => setError(String(err)));
-    let unlisten: (() => void) | undefined;
-    void onBookEnriched((book) => {
-      if (book.format !== "epub") return;
-      setBooks((current) => current.map((item) => (item.id === book.id ? book : item)));
-    }).then((fn) => {
-      unlisten = fn;
-    });
-    return () => unlisten?.();
   }, []);
 
   const filtered = useMemo(() => {
@@ -101,8 +92,8 @@ export function Library({ onOpen }: { onOpen: (book: Book) => void }) {
         <div className="mx-auto mt-24 max-w-lg text-center">
           <p className="font-serif text-3xl">An empty shelf</p>
           <p className="mt-3 text-ink-soft">
-            Drop in an EPUB and Bookworm will extract its file metadata, then look up a high-quality
-            cover to keep in your library.
+            Drop in an EPUB and Bookworm will read its title, author, and cover from the file.
+            If the book has no cover image, a letter cover is used instead.
           </p>
         </div>
       ) : (

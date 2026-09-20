@@ -1,28 +1,16 @@
 use crate::cover;
 use crate::db;
-use crate::enrich;
 use crate::error::AppError;
 use crate::extract;
 use crate::models::Book;
 use crate::state::{self, AppState};
 use serde_json::Value;
 use std::fs;
-use tauri::{AppHandle, Emitter, State};
+use tauri::State;
 
 #[tauri::command]
-pub fn import_book(app: AppHandle, state: State<AppState>, path: String) -> Result<Book, AppError> {
-    let book = extract::import_file(&state, &path)?;
-    let id = book.id.clone();
-    tauri::async_runtime::spawn(async move {
-        match enrich::enrich_book(&app, &id).await {
-            Ok(Some(updated)) => {
-                let _ = app.emit("book-enriched", updated);
-            }
-            Ok(None) => {}
-            Err(err) => eprintln!("metadata enrich failed: {err}"),
-        }
-    });
-    Ok(book)
+pub fn import_book(state: State<AppState>, path: String) -> Result<Book, AppError> {
+    extract::import_file(&state, &path)
 }
 
 #[tauri::command]
@@ -79,10 +67,6 @@ pub fn save_cover(
     cover::write_cover_jpeg(&dest, &bytes)?;
     let conn = state.conn()?;
     let mut book = db::get_book(&conn, &id)?.ok_or_else(|| AppError::msg("book not found"))?;
-    if book.cover_source.as_deref() == Some("openlibrary") || book.cover_source.as_deref() == Some("google")
-    {
-        return Ok(book);
-    }
     book.cover_path = Some(dest.to_string_lossy().into_owned());
     book.cover_source = Some(source);
     book.updated_at = state::now_ms();

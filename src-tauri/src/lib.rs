@@ -1,7 +1,6 @@
 mod commands;
 mod cover;
 mod db;
-mod enrich;
 mod error;
 mod extract;
 mod models;
@@ -33,7 +32,6 @@ pub fn run() {
             });
             #[cfg(debug_assertions)]
             if let Ok(paths) = std::env::var("BOOKWORM_IMPORT") {
-                use tauri::Emitter;
                 let handle = app.handle().clone();
                 for path in paths.split(':') {
                     let path = path.trim();
@@ -41,18 +39,8 @@ pub fn run() {
                         continue;
                     }
                     let state = handle.state::<AppState>();
-                    match extract::import_file(&state, path) {
-                        Ok(book) => {
-                            let id = book.id.clone();
-                            let app_handle = handle.clone();
-                            tauri::async_runtime::spawn(async move {
-                                if let Ok(Some(updated)) = enrich::enrich_book(&app_handle, &id).await
-                                {
-                                    let _ = app_handle.emit("book-enriched", updated);
-                                }
-                            });
-                        }
-                        Err(err) => eprintln!("BOOKWORM_IMPORT {path}: {err}"),
+                    if let Err(err) = extract::import_file(&state, path) {
+                        eprintln!("BOOKWORM_IMPORT {path}: {err}");
                     }
                 }
             }

@@ -1,7 +1,7 @@
 import { convertFileSrc, invoke, isTauri } from "@tauri-apps/api/core";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import type { Book } from "../types";
+import { readEpubMetadata } from "./epubMeta";
 import {
   deleteStoredBook,
   getStoredBook,
@@ -11,27 +11,30 @@ import {
   type StoredWebBook,
 } from "./offline/idb";
 
-const DEMO_BOOKS: Book[] = [
-  {
-    id: "demo-epub",
-    format: "epub",
-    title: "The Little Test Book",
-    authors: ["Ada Lovelace"],
-    isbn: "9780141439518",
-    description: "A short sample used to verify reading and speech.",
-    publisher: "Bookworm Press",
-    publishedDate: null,
-    language: "en",
-    libraryPath: "/samples/little-test-book.epub",
-    coverPath: null,
-    coverSource: "file",
-    pageCount: 1,
-    addedAt: 0,
-    lastOpenedAt: null,
-    updatedAt: 0,
-    progress: null,
-  },
-];
+const DEMO_LIBRARY_PATH = "/samples/little-test-book.epub";
+
+const DEMO_FALLBACK: Book = {
+  id: "demo-epub",
+  format: "epub",
+  title: "The Open Page",
+  authors: ["Ada Lovelace"],
+  isbn: "9781990000121",
+  description:
+    "A short tour of Bookworm settings: type, theme, layout, voice, speed, and auto-play.",
+  publisher: "Bookworm Press",
+  publishedDate: "2026",
+  language: "en",
+  libraryPath: DEMO_LIBRARY_PATH,
+  coverPath: null,
+  coverSource: null,
+  pageCount: 4,
+  addedAt: 0,
+  lastOpenedAt: null,
+  updatedAt: 0,
+  progress: null,
+};
+
+let demoBookPromise: Promise<Book> | null = null;
 
 /** Live blob: URLs for IndexedDB-backed books in this tab. */
 const webObjectUrls = new Map<string, { library?: string; cover?: string }>();
@@ -90,25 +93,60 @@ function bookFromStored(stored: StoredWebBook): Book {
   };
 }
 
+async function loadDemoBook(): Promise<Book> {
+  if (!demoBookPromise) {
+    demoBookPromise = (async () => {
+      try {
+        const response = await fetch(DEMO_LIBRARY_PATH);
+        if (!response.ok) return DEMO_FALLBACK;
+        const meta = await readEpubMetadata(await response.arrayBuffer());
+        const coverPath = meta.coverBlob ? URL.createObjectURL(meta.coverBlob) : null;
+        return {
+          ...DEMO_FALLBACK,
+          title: meta.title || DEMO_FALLBACK.title,
+          authors: meta.authors.length ? meta.authors : DEMO_FALLBACK.authors,
+          isbn: meta.isbn ?? DEMO_FALLBACK.isbn,
+          description: meta.description ?? DEMO_FALLBACK.description,
+          publisher: meta.publisher ?? DEMO_FALLBACK.publisher,
+          publishedDate: meta.publishedDate,
+          language: meta.language ?? DEMO_FALLBACK.language,
+          pageCount: meta.pageCount ?? DEMO_FALLBACK.pageCount,
+          coverPath,
+          coverSource: coverPath ? "file" : null,
+        };
+      } catch {
+        return DEMO_FALLBACK;
+      }
+    })();
+  }
+  return demoBookPromise;
+}
+
 async function bookFromFile(file: File): Promise<Book> {
   if (!file.name.toLowerCase().endsWith(".epub")) {
     throw new Error(`Only EPUB files are supported (got ${file.name})`);
   }
   await requestPersistentStorage();
   const now = Date.now();
+  let meta;
+  try {
+    meta = await readEpubMetadata(await file.arrayBuffer());
+  } catch {
+    meta = null;
+  }
   const stored: StoredWebBook = {
     id: crypto.randomUUID(),
     format: "epub",
-    title: titleFromFilename(file.name),
-    authors: [],
-    isbn: null,
-    description: null,
-    publisher: null,
-    publishedDate: null,
-    language: null,
-    coverBlob: null,
-    coverSource: null,
-    pageCount: null,
+    title: meta?.title || titleFromFilename(file.name),
+    authors: meta?.authors ?? [],
+    isbn: meta?.isbn ?? null,
+    description: meta?.description ?? null,
+    publisher: meta?.publisher ?? null,
+    publishedDate: meta?.publishedDate ?? null,
+    language: meta?.language ?? null,
+    coverBlob: meta?.coverBlob ?? null,
+    coverSource: meta?.coverBlob ? "file" : null,
+    pageCount: meta?.pageCount ?? null,
     addedAt: now,
     lastOpenedAt: null,
     updatedAt: now,
@@ -161,7 +199,8 @@ export async function listBooks() {
   if (!isTauri()) {
     const stored = await listStoredBooks();
     const imported = stored.map(bookFromStored);
-    return [...imported, ...DEMO_BOOKS].sort((a, b) => b.addedAt - a.addedAt);
+    const demo = await loadDemoBook();
+    return [...imported, demo].sort((a, b) => b.addedAt - a.addedAt);
   }
   const books = await invoke<Book[]>("list_books");
   return books.filter((book) => book.format === "epub");
@@ -170,9 +209,7 @@ export async function listBooks() {
 export async function openBook(id: string) {
   if (!isTauri()) {
     if (id.startsWith("demo-")) {
-      const book = DEMO_BOOKS.find((item) => item.id === id);
-      if (!book) throw new Error("book not found");
-      return book;
+      return loadDemoBook();
     }
     const stored = await getStoredBook(id);
     if (!stored) throw new Error("book not found");
@@ -236,9 +273,4 @@ export function fileSrc(path: string, cacheKey?: number) {
   }
   const src = convertFileSrc(path);
   return cacheKey ? `${src}${src.includes("?") ? "&" : "?"}v=${cacheKey}` : src;
-}
-
-export async function onBookEnriched(handler: (book: Book) => void): Promise<UnlistenFn> {
-  if (!isTauri()) return () => {};
-  return listen<Book>("book-enriched", (event) => handler(event.payload));
 }

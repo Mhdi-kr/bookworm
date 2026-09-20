@@ -29,16 +29,3 @@ pub fn write_cover_jpeg(dest: &Path, bytes: &[u8]) -> Result<u64, AppError> {
     }
     Ok(fs::metadata(dest)?.len())
 }
-
-pub fn cover_len(path: Option<&str>) -> u64 {
-    path.and_then(|p| fs::metadata(p).ok())
-        .map(|m| m.len())
-        .unwrap_or(0)
-}
-
-pub fn should_replace_cover(current_source: Option<&str>, current_len: u64, incoming_len: usize) -> bool {
-    match current_source {
-        None | Some("pdf_page") => incoming_len > 0,
-        _ => incoming_len as u64 > current_len,
-    }
-}

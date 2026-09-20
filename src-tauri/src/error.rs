@@ -24,12 +24,6 @@ impl Serialize for AppError {
     }
 }
 
-impl From<reqwest::Error> for AppError {
-    fn from(value: reqwest::Error) -> Self {
-        Self::Message(value.to_string())
-    }
-}
-
 impl From<image::ImageError> for AppError {
     fn from(value: image::ImageError) -> Self {
         Self::Message(value.to_string())
