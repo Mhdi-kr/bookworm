@@ -1,10 +1,21 @@
+import { normalizeSpeakable } from "./extract";
+
+/** Keep "1. Item" together — a leading numbered marker is not a sentence end. */
+const NUMBERED_PREFIX = /^(\d{1,3}[.)]\s+)/;
+
 /** Split prose into TTS chunks — shorter first chunk = faster time-to-first-audio. */
 export function splitForTts(text: string): string[] {
-  const normalized = text.replace(/\s+/g, " ").trim();
+  const normalized = normalizeSpeakable(text);
   if (!normalized) return [];
 
+  const prefix = normalized.match(NUMBERED_PREFIX)?.[1] ?? "";
+  const rest = prefix ? normalized.slice(prefix.length) : normalized;
   const sentences =
-    normalized.match(/[^.!?…]+(?:[.!?…]+|$)|[^.!?…]+$/g)?.map((part) => part.trim()) ?? [normalized];
+    rest.match(/[^.!?…]+(?:[.!?…]+|$)|[^.!?…]+$/g)?.map((part) => part.trim()).filter(Boolean) ??
+    (rest ? [rest] : []);
+
+  if (!sentences.length) return [normalized];
+  sentences[0] = `${prefix}${sentences[0]}`.trim();
 
   const parts: string[] = [];
   for (const sentence of sentences.filter(Boolean)) {
@@ -23,5 +34,5 @@ export function splitForTts(text: string): string[] {
 }
 
 export function ttsCacheKey(text: string, voice: string): string {
-  return `${voice}:${text.replace(/\s+/g, " ").trim()}`;
+  return `${voice}:${normalizeSpeakable(text) || text.replace(/\s+/g, " ").trim()}`;
 }

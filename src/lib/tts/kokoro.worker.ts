@@ -42,7 +42,7 @@ let speakChain: Promise<void> = Promise.resolve();
 let cacheReady = false;
 let activePrefetchId = 0;
 const audioLru = new AudioLruCache();
-const inflight = new Map<string, Promise<SynthesizedChunk>>();
+const inflight = new Map<string, Promise<SynthesizedChunk | null>>();
 
 const WEBGPU_ADAPTER_TIMEOUT_MS = 5_000;
 
@@ -311,7 +311,8 @@ function postReady() {
   self.postMessage({ type: "ready", voices: cachedVoices, device: inferenceDevice });
 }
 
-async function synthesizePart(part: string, voice: string): Promise<SynthesizedChunk> {
+async function synthesizePart(part: string, voice: string): Promise<SynthesizedChunk | null> {
+  if (!part.trim()) return null;
   const key = ttsCacheKey(part, voice);
   const hit = audioLru.get(key);
   if (hit) {
@@ -322,14 +323,19 @@ async function synthesizePart(part: string, voice: string): Promise<SynthesizedC
   if (pending) return pending;
 
   const task = (async () => {
-    const raw = await tts.generate(part, { voice: voice as "af_heart", speed: 1 });
-    const chunk: SynthesizedChunk = {
-      text: part,
-      audio: new Float32Array(raw.audio),
-      sampleRate: raw.sampling_rate,
-    };
-    audioLru.set(key, { audio: chunk.audio, sampleRate: chunk.sampleRate });
-    return chunk;
+    try {
+      const raw = await tts.generate(part, { voice: voice as "af_heart", speed: 1 });
+      const chunk: SynthesizedChunk = {
+        text: part,
+        audio: new Float32Array(raw.audio),
+        sampleRate: raw.sampling_rate,
+      };
+      audioLru.set(key, { audio: chunk.audio, sampleRate: chunk.sampleRate });
+      return chunk;
+    } catch {
+      // Decorative glyphs / empty phonemes should not abort a whole section.
+      return null;
+    }
   })().finally(() => {
     inflight.delete(key);
   });
@@ -341,7 +347,8 @@ async function synthesizePart(part: string, voice: string): Promise<SynthesizedC
 async function synthesizeBlock(text: string, voice: string): Promise<SynthesizedChunk[]> {
   const chunks: SynthesizedChunk[] = [];
   for (const part of splitForTts(text)) {
-    chunks.push(await synthesizePart(part, voice));
+    const chunk = await synthesizePart(part, voice);
+    if (chunk) chunks.push(chunk);
   }
   return chunks;
 }
@@ -406,8 +413,9 @@ async function synthesizeParts(
     if (runId !== speakRunId || activeGeneration !== generation) return;
     const part = parts[index];
     const chunk = await synthesizePart(part, voice);
+    if (!chunk) continue;
     if (runId !== speakRunId || activeGeneration !== generation) return;
-    postChunk(generation, part, {
+    postChunk(generation, chunk.text, {
       audio: chunk.audio,
       sampling_rate: chunk.sampleRate,
     });

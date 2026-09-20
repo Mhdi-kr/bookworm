@@ -2,8 +2,7 @@ import type { Contents } from "epubjs";
 import {
   collectSectionBlocks,
   headingLevel,
-  SKIP_SELECTOR,
-  SPEAKABLE_BLOCK_SELECTOR,
+  listSpeakableBlocks,
   speakableTextFromElement,
 } from "./extract";
 import type { SelectionPayload } from "../../types";
@@ -24,31 +23,25 @@ const SPEAKING_CLASS = "bookworm-speaking";
 const LOADING_CLASS = "bookworm-loading";
 const PLAY_BTN_CLASS = "bookworm-play-btn";
 
-const SPEAKABLE_TAGS = new Set([
-  "p",
-  "h1",
-  "h2",
-  "h3",
-  "h4",
-  "h5",
-  "h6",
-  "li",
-  "blockquote",
-  "dd",
-  "dt",
-  "td",
-  "th",
-]);
-
 const SPEAKABLE_STYLE = `
 .${SPEAKABLE_CLASS} {
   cursor: pointer !important;
   position: relative !important;
   border-radius: 6px !important;
-  padding: 0.2em 0.45em 0.2em 2.35em !important;
-  margin: 0.2em 0 !important;
+  padding-top: 0.2em !important;
+  padding-right: 0.45em !important;
+  padding-bottom: 0.2em !important;
+  padding-left: 2.35em !important;
+  margin-top: 0.2em !important;
+  margin-bottom: 0.2em !important;
   transition: background 0.15s ease !important;
   -webkit-tap-highlight-color: rgba(31, 107, 98, 0.15) !important;
+}
+ul, ol {
+  overflow: visible !important;
+}
+li.${SPEAKABLE_CLASS} {
+  list-style-position: inside !important;
 }
 .${SPEAKABLE_CLASS}::before {
   content: "" !important;
@@ -167,26 +160,7 @@ function rectFromElement(el: Element, contents: Contents) {
   };
 }
 
-function isSpeakableTag(el: Element): boolean {
-  return SPEAKABLE_TAGS.has(el.localName.toLowerCase());
-}
-
-function isSpeakableBlock(el: Element): boolean {
-  if (!isSpeakableTag(el)) return false;
-  if (el.closest(SKIP_SELECTOR)) return false;
-  // Skip containers that wrap smaller blocks (e.g. li > p keeps p, skips li).
-  for (const child of el.querySelectorAll(SPEAKABLE_BLOCK_SELECTOR)) {
-    if (child !== el && isSpeakableTag(child) && !child.closest(SKIP_SELECTOR)) {
-      return false;
-    }
-  }
-  return speakableTextFromElement(el).length > 0;
-}
-
-export function listSpeakableBlocks(doc: Document | null | undefined): Element[] {
-  if (!doc) return [];
-  return Array.from(doc.querySelectorAll(SPEAKABLE_BLOCK_SELECTOR)).filter(isSpeakableBlock);
-}
+export { listSpeakableBlocks };
 
 function itemsFromElements(contents: Contents, elements: Element[]): SpeakSectionItem[] {
   const items: SpeakSectionItem[] = [];
