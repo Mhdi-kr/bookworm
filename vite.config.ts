@@ -55,7 +55,7 @@ export default defineConfig(async () => ({
             options: {
               cacheName: "bookworm-fonts",
               expiration: {
-                maxEntries: 20,
+                maxEntries: 40,
                 maxAgeSeconds: 60 * 60 * 24 * 365,
               },
             },

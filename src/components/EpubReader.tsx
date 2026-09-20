@@ -2,51 +2,23 @@ import { useEffect, useImperativeHandle, useRef, useState, forwardRef } from "re
 import ePub, { type Contents, type Location, type NavItem, type Rendition } from "epubjs";
 import type Section from "epubjs/types/section";
 import { fileSrc } from "../lib/api";
-import { attachSpeakableBlocks, clearSpeakingHighlights, type SpeakSectionItem } from "../lib/tts/speakable";
+import {
+  attachSpeakableBlocks,
+  clearSpeakingHighlights,
+  nextSectionItems,
+  speakItemsMatchingStart,
+  type SpeakAnchor,
+  type SpeakSectionItem,
+} from "../lib/tts/speakable";
 import { ttsEngine } from "../lib/tts/engine";
-import type { Book, ReaderOrientation, ReaderTheme, SelectionPayload, TocItem } from "../types";
-
-const THEMES: Record<ReaderTheme, Record<string, Record<string, string>>> = {
-  paper: {
-    body: {
-      background: "#eef3f0 !important",
-      color: "#14201b !important",
-      "font-family": "Georgia, 'Palatino Linotype', Palatino, serif",
-      "line-height": "1.7",
-      padding: "0 7%",
-      "-webkit-user-select": "text",
-      "user-select": "text",
-    },
-    p: { color: "#14201b !important" },
-    a: { color: "#1f6b62 !important" },
-  },
-  fog: {
-    body: {
-      background: "#dfe6eb !important",
-      color: "#1a2430 !important",
-      "font-family": "Georgia, 'Palatino Linotype', Palatino, serif",
-      "line-height": "1.7",
-      padding: "0 7%",
-      "-webkit-user-select": "text",
-      "user-select": "text",
-    },
-    p: { color: "#1a2430 !important" },
-    a: { color: "#2a6b7c !important" },
-  },
-  dark: {
-    body: {
-      background: "#121a17 !important",
-      color: "#d5e0db !important",
-      "font-family": "Georgia, 'Palatino Linotype', Palatino, serif",
-      "line-height": "1.7",
-      padding: "0 7%",
-      "-webkit-user-select": "text",
-      "user-select": "text",
-    },
-    p: { color: "#d5e0db !important" },
-    a: { color: "#8ebfb4 !important" },
-  },
-};
+import { applyReaderFont, applyReaderFontToRendition } from "../lib/readerFonts";
+import {
+  applyReaderTheme,
+  applyReaderThemeToHost,
+  applyReaderThemeToRendition,
+  readerTheme,
+} from "../lib/readerThemes";
+import type { Book, ReaderFont, ReaderOrientation, ReaderTheme, SelectionPayload, TocItem } from "../types";
 
 type EpubView = { contents?: Contents };
 
@@ -92,8 +64,79 @@ function applyOrientation(rendition: Rendition, orientation: ReaderOrientation) 
   }
 }
 
+function contentsFromRendition(rendition: Rendition | null): Contents | undefined {
+  if (!rendition) return undefined;
+  const contentsList = rendition.getContents();
+  const contents = (
+    Array.isArray(contentsList) ? contentsList[0] : contentsList
+  ) as Contents | undefined;
+  return contents?.document?.body ? contents : undefined;
+}
+
+function elementVisibleInFrame(element: Element): boolean {
+  if (!element.isConnected) return false;
+  const view = element.ownerDocument.defaultView;
+  if (!view) return false;
+  const rect = element.getBoundingClientRect();
+  return (
+    rect.width > 0 &&
+    rect.height > 0 &&
+    rect.bottom > 8 &&
+    rect.top < view.innerHeight - 8 &&
+    rect.right > 8 &&
+    rect.left < view.innerWidth - 8
+  );
+}
+
+async function waitForContents(
+  rendition: Rendition,
+  options?: { timeoutMs?: number; notSectionIndex?: number },
+): Promise<Contents | undefined> {
+  const timeoutMs = options?.timeoutMs ?? 2000;
+  const ready = () => {
+    const contents = contentsFromRendition(rendition);
+    if (!contents) return undefined;
+    if (
+      typeof options?.notSectionIndex === "number" &&
+      contents.sectionIndex === options.notSectionIndex
+    ) {
+      return undefined;
+    }
+    return contents;
+  };
+  const existing = ready();
+  if (existing) return existing;
+
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timer);
+      rendition.off("rendered", onRendered);
+      resolve(ready());
+    };
+    const onRendered = () => finish();
+    const timer = window.setTimeout(finish, timeoutMs);
+    rendition.on("rendered", onRendered);
+    if (ready()) finish();
+  });
+}
+
+function spineIndexOf(rendition: Rendition): number | undefined {
+  const fromLocation = rendition.location?.start?.index;
+  if (typeof fromLocation === "number") return fromLocation;
+  return undefined;
+}
+
+export type NextSpeakableSection = {
+  items: SpeakSectionItem[];
+  contents: Contents;
+};
+
 export type EpubReaderHandle = {
   goTo: (href: string) => Promise<void>;
+  nextSpeakableSection: (after: SpeakAnchor | null) => Promise<NextSpeakableSection | null>;
 };
 
 export const EpubReader = forwardRef<
@@ -101,21 +144,25 @@ export const EpubReader = forwardRef<
   {
     book: Book;
     theme: ReaderTheme;
+    font: ReaderFont;
     fontSize: number;
     orientation: ReaderOrientation;
     onProgress: (progress: { cfi: string; percent: number; href?: string }) => void;
     onToc?: (items: TocItem[]) => void;
-    onSpeakBlock?: (payload: SelectionPayload) => void;
+    autoPlay?: boolean;
+    onSpeakBlock?: (payload: SelectionPayload, element: Element, contents: Contents) => void;
     onSpeakSection?: (items: SpeakSectionItem[], contents: Contents) => void;
   }
 >(function EpubReader(
   {
     book,
     theme,
+    font,
     fontSize,
     orientation,
     onProgress,
     onToc,
+    autoPlay = false,
     onSpeakBlock,
     onSpeakSection,
   },
@@ -129,6 +176,9 @@ export const EpubReader = forwardRef<
   const onSpeakBlockRef = useRef(onSpeakBlock);
   const onSpeakSectionRef = useRef(onSpeakSection);
   const orientationRef = useRef(orientation);
+  const autoPlayRef = useRef(autoPlay);
+  const fontRef = useRef(font);
+  const themeRef = useRef(theme);
   const detachSpeakableRef = useRef<(() => void) | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   onProgressRef.current = onProgress;
@@ -136,12 +186,101 @@ export const EpubReader = forwardRef<
   onSpeakBlockRef.current = onSpeakBlock;
   onSpeakSectionRef.current = onSpeakSection;
   orientationRef.current = orientation;
+  autoPlayRef.current = autoPlay;
+  fontRef.current = font;
+  themeRef.current = theme;
 
   useImperativeHandle(ref, () => ({
     goTo: async (href: string) => {
       const rendition = renditionRef.current;
       if (!rendition || !href) return;
       await rendition.display(href);
+    },
+    nextSpeakableSection: async (after: SpeakAnchor | null) => {
+      const rendition = renditionRef.current;
+      const book = bookRef.current;
+      if (!rendition) return null;
+
+      const reveal = async (
+        items: SpeakSectionItem[],
+        contents: Contents,
+      ): Promise<NextSpeakableSection | null> => {
+        if (!items.length) return null;
+        const start = items[0];
+        const cfi = start.payload.locator.kind === "epub" ? start.payload.locator.cfi : "";
+        const alreadyVisible = elementVisibleInFrame(start.element);
+        if (!alreadyVisible) {
+          if (cfi) {
+            try {
+              await rendition.display(cfi);
+            } catch {
+              try {
+                start.element.scrollIntoView({ block: "start", inline: "nearest" });
+              } catch {
+                /* optional */
+              }
+            }
+          } else {
+            try {
+              start.element.scrollIntoView({ block: "start", inline: "nearest" });
+            } catch {
+              /* optional */
+            }
+          }
+        }
+        const fresh = (await waitForContents(rendition)) ?? contents;
+        const rebuilt = speakItemsMatchingStart(fresh, { cfi, text: start.payload.text });
+        if (rebuilt.length) return { items: rebuilt, contents: fresh };
+        if (items.every((item) => item.element.isConnected)) {
+          return { items, contents: fresh };
+        }
+        return null;
+      };
+
+      const displayNextLinear = async (): Promise<boolean> => {
+        if (!book) return false;
+        let index = spineIndexOf(rendition);
+        if (typeof index !== "number") {
+          try {
+            const loc = await Promise.resolve(
+              rendition.currentLocation() as
+                | { start?: { index?: number }; index?: number }
+                | Promise<{ start?: { index?: number }; index?: number }>,
+            );
+            index =
+              loc && "start" in loc && typeof loc.start?.index === "number"
+                ? loc.start.index
+                : loc?.index;
+          } catch {
+            return false;
+          }
+        }
+        if (typeof index !== "number") return false;
+        const current = book.spine.get(index);
+        const next = current?.next?.();
+        const href = next && "href" in next ? next.href : undefined;
+        if (!href) return false;
+        await rendition.display(href);
+        return true;
+      };
+
+      const contents = (await waitForContents(rendition)) ?? contentsFromRendition(rendition);
+      if (contents) {
+        const items = nextSectionItems(contents, after);
+        if (items.length) return reveal(items, contents);
+      }
+
+      const maxHops = 64;
+      for (let hop = 0; hop < maxHops; hop += 1) {
+        const fromIndex = contentsFromRendition(rendition)?.sectionIndex;
+        const moved = await displayNextLinear();
+        if (!moved) return null;
+        const nextContents = await waitForContents(rendition, { notSectionIndex: fromIndex });
+        if (!nextContents) return null;
+        const items = nextSectionItems(nextContents, null);
+        if (items.length) return reveal(items, nextContents);
+      }
+      return null;
     },
   }));
 
@@ -169,11 +308,10 @@ export const EpubReader = forwardRef<
         });
         renditionRef.current = rendition;
         applyOrientation(rendition, orientationRef.current);
-        (Object.keys(THEMES) as ReaderTheme[]).forEach((name) => {
-          rendition.themes.register(name, THEMES[name]);
-        });
-        rendition.themes.select(theme);
         rendition.themes.fontSize(`${fontSize}%`);
+        applyReaderThemeToRendition(rendition, themeRef.current);
+        applyReaderThemeToHost(host, themeRef.current);
+        applyReaderFontToRendition(rendition, fontRef.current);
 
         await instance.ready;
         if (cancelled) return;
@@ -195,8 +333,8 @@ export const EpubReader = forwardRef<
           detachSpeakableRef.current?.();
           detachSpeakableRef.current = attachSpeakableBlocks(
             contents,
-            (payload) => {
-              onSpeakBlockRef.current?.(payload);
+            (payload, element) => {
+              onSpeakBlockRef.current?.(payload, element, contents);
             },
             (text) => ttsEngine.prefetch(text),
             (items) => {
@@ -223,6 +361,9 @@ export const EpubReader = forwardRef<
 
         rendition.on("rendered", (_section: unknown, view: EpubView) => {
           wireSpeakable(view);
+          applyReaderTheme(view.contents, themeRef.current);
+          applyReaderThemeToHost(host, themeRef.current);
+          applyReaderFont(view.contents, fontRef.current);
           const contents = view.contents;
           if (!contents?.document) return;
           const blockNativeMenu = (event: Event) => event.preventDefault();
@@ -260,8 +401,14 @@ export const EpubReader = forwardRef<
   }, [book.id, book.libraryPath]);
 
   useEffect(() => {
-    renditionRef.current?.themes.select(theme);
+    applyReaderThemeToRendition(renditionRef.current, theme);
+    applyReaderThemeToHost(hostRef.current, theme);
+    applyReaderFontToRendition(renditionRef.current, fontRef.current);
   }, [theme]);
+
+  useEffect(() => {
+    applyReaderFontToRendition(renditionRef.current, font);
+  }, [font]);
 
   useEffect(() => {
     renditionRef.current?.themes.fontSize(`${fontSize}%`);
@@ -282,12 +429,36 @@ export const EpubReader = forwardRef<
   }, [orientation]);
 
   useEffect(() => {
+    const host = hostRef.current;
+    if (!host) return;
+    let lastWidth = 0;
+    let lastHeight = 0;
+    const observer = new ResizeObserver((entries) => {
+      const rendition = renditionRef.current;
+      const rect = entries[0]?.contentRect;
+      if (!rendition || !rect) return;
+      const width = Math.round(rect.width);
+      const height = Math.round(rect.height);
+      if (width <= 0 || height <= 0 || (width === lastWidth && height === lastHeight)) return;
+      lastWidth = width;
+      lastHeight = height;
+      rendition.resize(width, height);
+    });
+    observer.observe(host);
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
     const unsubscribe = ttsEngine.subscribe(() => {
-      if (ttsEngine.status === "idle" || ttsEngine.status === "ready" || ttsEngine.status === "error") {
-        const iframe = hostRef.current?.querySelector("iframe");
-        const doc = iframe?.contentDocument;
-        if (doc) clearSpeakingHighlights(doc);
-      }
+      const status = ttsEngine.status;
+      const shouldClear =
+        status === "idle" ||
+        status === "error" ||
+        (status === "ready" && (!autoPlayRef.current || !ttsEngine.currentText));
+      if (!shouldClear) return;
+      const iframe = hostRef.current?.querySelector("iframe");
+      const doc = iframe?.contentDocument;
+      if (doc) clearSpeakingHighlights(doc);
     });
     return unsubscribe;
   }, []);
@@ -301,7 +472,12 @@ export const EpubReader = forwardRef<
           Could not open this EPUB: {loadError}
         </p>
       ) : null}
-      <div ref={hostRef} className="h-full w-full" data-epub-host />
+      <div
+        ref={hostRef}
+        className="h-full w-full"
+        data-epub-host
+        style={{ background: readerTheme(theme).background }}
+      />
       {showPageButtons ? (
         <>
           <button

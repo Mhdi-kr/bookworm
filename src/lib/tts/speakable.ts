@@ -13,6 +13,12 @@ export type SpeakSectionItem = {
   payload: SelectionPayload;
 };
 
+export type SpeakAnchor = {
+  element?: Element | null;
+  cfi?: string;
+  text?: string;
+};
+
 const SPEAKABLE_CLASS = "bookworm-speakable";
 const SPEAKING_CLASS = "bookworm-speaking";
 const LOADING_CLASS = "bookworm-loading";
@@ -177,6 +183,108 @@ function isSpeakableBlock(el: Element): boolean {
   return speakableTextFromElement(el).length > 0;
 }
 
+export function listSpeakableBlocks(doc: Document | null | undefined): Element[] {
+  if (!doc) return [];
+  return Array.from(doc.querySelectorAll(SPEAKABLE_BLOCK_SELECTOR)).filter(isSpeakableBlock);
+}
+
+function itemsFromElements(contents: Contents, elements: Element[]): SpeakSectionItem[] {
+  const items: SpeakSectionItem[] = [];
+  for (const element of elements) {
+    const payload = payloadFromElement(element, contents);
+    if (payload) items.push({ element, payload });
+  }
+  return items;
+}
+
+/** Speak from a heading (full section) or from a body block until the next heading. */
+export function speakItemsFrom(contents: Contents, startBlock: Element): SpeakSectionItem[] {
+  const blocks = listSpeakableBlocks(contents.document);
+  if (headingLevel(startBlock) !== null) {
+    return itemsFromElements(contents, collectSectionBlocks(blocks, startBlock));
+  }
+  const from = blocks.indexOf(startBlock);
+  if (from < 0) {
+    const payload = payloadFromElement(startBlock, contents);
+    return payload ? [{ element: startBlock, payload }] : [];
+  }
+  const rest: Element[] = [];
+  for (let index = from; index < blocks.length; index += 1) {
+    if (index > from && headingLevel(blocks[index]) !== null) break;
+    rest.push(blocks[index]);
+  }
+  return itemsFromElements(contents, rest);
+}
+
+export function speakItemsMatchingStart(
+  contents: Contents,
+  start: { cfi?: string; text: string },
+): SpeakSectionItem[] {
+  const blocks = listSpeakableBlocks(contents.document);
+  let startBlock: Element | undefined;
+  if (start.cfi) {
+    startBlock = blocks.find((element) => {
+      try {
+        return contents.cfiFromNode(element) === start.cfi;
+      } catch {
+        return false;
+      }
+    });
+  }
+  if (!startBlock) {
+    startBlock = blocks.find((element) => speakableTextFromElement(element) === start.text);
+  }
+  return startBlock ? speakItemsFrom(contents, startBlock) : [];
+}
+
+function indexOfSpokenBlock(
+  contents: Contents,
+  blocks: Element[],
+  after: SpeakAnchor | Element,
+): number {
+  const element = after instanceof Element ? after : after.element ?? null;
+  const cfi = after instanceof Element ? undefined : after.cfi;
+  const text = after instanceof Element ? undefined : after.text;
+
+  if (element && element.ownerDocument === contents.document) {
+    const index = blocks.indexOf(element);
+    if (index >= 0) return index;
+  }
+  if (cfi) {
+    const index = blocks.findIndex((block) => {
+      try {
+        return contents.cfiFromNode(block) === cfi;
+      } catch {
+        return false;
+      }
+    });
+    if (index >= 0) return index;
+  }
+  if (text) {
+    const index = blocks.findIndex((block) => speakableTextFromElement(block) === text);
+    if (index >= 0) return index;
+  }
+  return -1;
+}
+
+/** Next section after a spoken block, or the first section when `after` is null. */
+export function nextSectionItems(
+  contents: Contents,
+  after: SpeakAnchor | Element | null,
+): SpeakSectionItem[] {
+  const blocks = listSpeakableBlocks(contents.document);
+  if (!blocks.length) return [];
+
+  let from = 0;
+  if (after) {
+    const index = indexOfSpokenBlock(contents, blocks, after);
+    if (index < 0) return [];
+    from = index + 1;
+  }
+  if (from >= blocks.length) return [];
+  return speakItemsFrom(contents, blocks[from]);
+}
+
 function payloadFromElement(el: Element, contents: Contents): SelectionPayload | null {
   const text = speakableTextFromElement(el);
   if (!text) return null;
@@ -221,7 +329,7 @@ export function attachSpeakableBlocks(
   style.textContent = SPEAKABLE_STYLE;
 
   const cleanups: Array<() => void> = [];
-  const blocks = Array.from(doc.querySelectorAll(SPEAKABLE_BLOCK_SELECTOR)).filter(isSpeakableBlock);
+  const blocks = listSpeakableBlocks(doc);
 
   const speakSectionFrom = (startBlock: Element) => {
     if (!onSpeakSection) return false;

@@ -2,7 +2,8 @@ import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { useSyncExternalStore } from "react";
 import { onPointerDownOutside } from "../lib/outsidePointer";
 import { ttsEngine } from "../lib/tts/engine";
-import type { ReaderOrientation, ReaderTheme } from "../types";
+import { ensureParentReaderFontFaces, READER_FONTS } from "../lib/readerFonts";
+import type { ReaderFont, ReaderOrientation, ReaderTheme } from "../types";
 
 function GearIcon() {
   return (
@@ -30,19 +31,27 @@ function inferenceDeviceLabel(device: "webgpu" | "wasm" | null): string {
 
 export function ReaderSettingsPopover({
   theme,
+  font,
   fontSize,
   orientation,
+  autoPlay,
   onThemeChange,
+  onFontChange,
   onFontSizeChange,
   onOrientationChange,
+  onAutoPlayChange,
   onOpenChange,
 }: {
   theme: ReaderTheme;
+  font: ReaderFont;
   fontSize: number;
   orientation: ReaderOrientation;
+  autoPlay: boolean;
   onThemeChange: (theme: ReaderTheme) => void;
+  onFontChange: (font: ReaderFont) => void;
   onFontSizeChange: (size: number) => void;
   onOrientationChange: (orientation: ReaderOrientation) => void;
+  onAutoPlayChange: (autoPlay: boolean) => void;
   onOpenChange?: (open: boolean) => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -63,6 +72,10 @@ export function ReaderSettingsPopover({
     setOpen(next);
     onOpenChange?.(next);
   }
+
+  useEffect(() => {
+    if (open) ensureParentReaderFontFaces();
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;
@@ -99,9 +112,28 @@ export function ReaderSettingsPopover({
           id={panelId}
           role="dialog"
           aria-label="Reader settings"
-          className="absolute right-0 top-full z-50 mt-2 w-72 rounded-xl border border-paper-deep bg-ink p-4 text-sepia shadow-2xl"
+          className="absolute right-0 top-full z-50 mt-2 w-80 rounded-xl border border-paper-deep bg-ink p-4 text-sepia shadow-2xl"
         >
           <Section title="Reading">
+            <fieldset className="mb-3 block text-xs">
+              <legend className="mb-1.5 text-sepia/70">Font</legend>
+              <div className="flex flex-col gap-1.5">
+                {READER_FONTS.map((option) => (
+                  <button
+                    key={option.id}
+                    type="button"
+                    onClick={() => onFontChange(option.id)}
+                    aria-pressed={font === option.id}
+                    style={{ fontFamily: option.cssFamily }}
+                    className={`rounded-lg px-3 py-2 text-left text-sm leading-snug transition ${
+                      font === option.id ? "bg-sepia text-ink" : "bg-white/10 hover:bg-white/15"
+                    }`}
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
+            </fieldset>
             <label className="mb-3 block text-xs">
               <span className="mb-1.5 flex items-center justify-between text-sepia/70">
                 <span>Font size</span>
@@ -110,6 +142,7 @@ export function ReaderSettingsPopover({
               <div className="flex items-center gap-2">
                 <button
                   type="button"
+                  aria-label="Decrease font size"
                   className="rounded-lg bg-white/10 px-2.5 py-1.5 text-sm hover:bg-white/15"
                   onClick={() => onFontSizeChange(Math.max(90, fontSize - 8))}
                 >
@@ -126,6 +159,7 @@ export function ReaderSettingsPopover({
                 />
                 <button
                   type="button"
+                  aria-label="Increase font size"
                   className="rounded-lg bg-white/10 px-2.5 py-1.5 text-sm hover:bg-white/15"
                   onClick={() => onFontSizeChange(Math.min(160, fontSize + 8))}
                 >
@@ -210,7 +244,15 @@ export function ReaderSettingsPopover({
                 value={engine.speed}
                 onChange={(event) => engine.setSpeed(Number(event.target.value))}
                 className="w-full accent-gold"
-                disabled={speechBusy}
+              />
+            </label>
+            <label className="mb-3 flex cursor-pointer items-center justify-between gap-3 text-xs">
+              <span className="text-sepia/70">Auto-play</span>
+              <input
+                type="checkbox"
+                checked={autoPlay}
+                onChange={(event) => onAutoPlayChange(event.target.checked)}
+                className="h-4 w-4 accent-gold"
               />
             </label>
             <div className="text-xs">

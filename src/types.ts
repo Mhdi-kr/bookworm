@@ -45,6 +45,9 @@ export type VoiceInfo = {
 
 export type ReaderTheme = "paper" | "fog" | "dark";
 
+/** Body faces for EPUB text. Georgia is a system font; the rest are self-hosted. */
+export type ReaderFont = "literata" | "georgia" | "baskerville" | "opendyslexic";
+
 /** Horizontal = paginated pages; vertical = continuous scroll. */
 export type ReaderOrientation = "horizontal" | "vertical";
 
