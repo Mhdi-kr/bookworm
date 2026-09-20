@@ -70,7 +70,7 @@ function StopIcon() {
 /** Dim when idle so page text underneath stays readable; brighten on hover/focus. */
 function DimShell({ children }: { children: ReactNode }) {
   return (
-    <div className="pointer-events-none fixed inset-x-0 bottom-0 z-40 p-4">
+    <div className="pointer-events-none fixed inset-x-0 bottom-0 z-40 p-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
       <div className="pointer-events-auto mx-auto max-w-4xl opacity-40 transition-opacity duration-200 hover:opacity-100 focus-within:opacity-100">
         {children}
       </div>

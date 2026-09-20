@@ -147,6 +147,19 @@ export function importBook(path: string) {
   return invoke<Book>("import_book", { path });
 }
 
+/** Import EPUB File objects (file picker, drag-and-drop, or OS file handler). */
+export async function importFromFiles(files: File[]): Promise<Book[]> {
+  const imported: Book[] = [];
+  for (const file of files) {
+    if (!file.name.toLowerCase().endsWith(".epub")) continue;
+    imported.push(await bookFromFile(file));
+  }
+  if (!imported.length && files.length) {
+    throw new Error("Only EPUB files are supported.");
+  }
+  return imported;
+}
+
 /** Import one or more EPUBs in desktop (native dialog) or browser (file input). */
 export async function importBooks(): Promise<Book[]> {
   if (isTauri()) {
@@ -161,12 +174,7 @@ export async function importBooks(): Promise<Book[]> {
     }
     return imported;
   }
-  const files = await pickBookFiles();
-  const imported: Book[] = [];
-  for (const file of files) {
-    imported.push(await bookFromFile(file));
-  }
-  return imported;
+  return importFromFiles(await pickBookFiles());
 }
 
 export async function listBooks() {

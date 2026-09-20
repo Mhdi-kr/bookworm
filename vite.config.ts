@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Connect, Plugin } from "vite";
@@ -7,16 +8,63 @@ import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import { VitePWA } from "vite-plugin-pwa";
 
-const root = path.dirname(fileURLToPath(import.meta.url));
+const configDir = path.dirname(fileURLToPath(import.meta.url));
+const root = fs.existsSync(path.join(configDir, "package.json")) ? configDir : process.cwd();
 
 const ORT_WASM_FILES = [
   "ort-wasm-simd-threaded.jsep.wasm",
   "ort-wasm-simd-threaded.jsep.mjs",
 ] as const;
 
+const ORT_WASM = "ort-wasm-simd-threaded.jsep.wasm";
+
+function pnpmOrtWasmDirs(): string[] {
+  const pnpm = path.resolve(root, "node_modules/.pnpm");
+  if (!fs.existsSync(pnpm)) return [];
+  const dirs: string[] = [];
+  for (const name of fs.readdirSync(pnpm)) {
+    if (!name.startsWith("@huggingface+transformers@") && !name.startsWith("onnxruntime-web@")) {
+      continue;
+    }
+    const pkg = name.startsWith("onnxruntime-web@") ? "onnxruntime-web" : "@huggingface/transformers";
+    dirs.push(path.join(pnpm, name, "node_modules", pkg, "dist"));
+  }
+  return dirs;
+}
+
+/** pnpm does not hoist @huggingface/transformers; resolve it from kokoro-js. */
+function resolveOrtWasmDir(): string {
+  const candidates: string[] = [];
+  const kokoroPkg = path.resolve(root, "node_modules/kokoro-js/package.json");
+  if (fs.existsSync(kokoroPkg)) {
+    try {
+      // realpath: pnpm's node_modules/kokoro-js is a symlink; resolving from it
+      // would only see hoisted deps, which CI does not create.
+      const entry = createRequire(fs.realpathSync(kokoroPkg)).resolve(
+        "@huggingface/transformers",
+      );
+      candidates.push(path.dirname(entry));
+    } catch {
+      /* fall through to filesystem guesses */
+    }
+  }
+  candidates.push(
+    path.resolve(root, "node_modules/@huggingface/transformers/dist"),
+    path.resolve(root, "node_modules/onnxruntime-web/dist"),
+    ...pnpmOrtWasmDirs(),
+  );
+
+  const hit = candidates.find((dir) => fs.existsSync(path.join(dir, ORT_WASM)));
+  if (hit) return hit;
+
+  throw new Error(
+    `Could not find ${ORT_WASM} (looked in ${candidates.join(", ") || "no candidates"}).`,
+  );
+}
+
 /** Serve/emit ORT wasm next to bundled kokoro.web.js — Vite does not rewrite new URL() inside that file. */
 function copyOrtWasm(): Plugin {
-  const srcDir = path.resolve(root, "node_modules/@huggingface/transformers/dist");
+  const srcDir = resolveOrtWasmDir();
 
   const serve: Connect.NextHandleFunction = (req, res, next) => {
     const url = req.url?.split("?")[0] ?? "";
@@ -66,26 +114,61 @@ export default defineConfig(async () => ({
     VitePWA({
       registerType: "autoUpdate",
       injectRegister: false,
-      includeAssets: ["tauri.svg"],
+      includeAssets: [
+        "icon.svg",
+        "icon-192.png",
+        "icon-512.png",
+        "icon-512-maskable.png",
+        "apple-touch-icon.png",
+      ],
       manifest: {
+        id: "./",
         name: "Bookworm",
         short_name: "Bookworm",
         description: "Private EPUB library with on-device speech",
         theme_color: "#1f6b62",
         background_color: "#e3e9e6",
         display: "standalone",
+        display_override: ["standalone", "minimal-ui"],
+        orientation: "any",
+        lang: "en",
         start_url: "./",
+        scope: "./",
+        categories: ["books", "education"],
         icons: [
           {
-            src: "tauri.svg",
-            sizes: "any",
-            type: "image/svg+xml",
+            src: "icon-192.png",
+            sizes: "192x192",
+            type: "image/png",
             purpose: "any",
+          },
+          {
+            src: "icon-512.png",
+            sizes: "512x512",
+            type: "image/png",
+            purpose: "any",
+          },
+          {
+            src: "icon-512-maskable.png",
+            sizes: "512x512",
+            type: "image/png",
+            purpose: "maskable",
+          },
+        ],
+        file_handlers: [
+          {
+            action: "./",
+            accept: {
+              "application/epub+zip": [".epub"],
+            },
           },
         ],
       },
       workbox: {
-        globPatterns: ["**/*.{js,css,html,ico,svg,woff2}"],
+        globPatterns: ["**/*.{js,mjs,css,html,ico,png,svg,woff2}"],
+        globIgnores: ["**/samples/**"],
+        skipWaiting: true,
+        clientsClaim: true,
         // kokoro.web.js is ~2.1 MiB; default precache cap is 2 MiB.
         // Do not precache the 21 MiB ORT wasm — Safari SW install would stall.
         maximumFileSizeToCacheInBytes: 3 * 1024 * 1024,

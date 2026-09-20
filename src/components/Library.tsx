@@ -2,17 +2,26 @@ import { type KeyboardEvent, type MouseEvent, useEffect, useMemo, useState } fro
 import {
   deleteBook,
   importBooks,
+  importFromFiles,
   listBooks,
   openBook,
 } from "../lib/api";
+import {
+  BOOKS_CHANGED_EVENT,
+  subscribeOnline,
+} from "../lib/offline/pwa";
 import type { Book } from "../types";
 import { Cover } from "./Cover";
+import { InstallApp } from "./InstallApp";
 
 export function Library({ onOpen }: { onOpen: (book: Book) => void }) {
   const [books, setBooks] = useState<Book[]>([]);
   const [query, setQuery] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [online, setOnline] = useState(
+    () => (typeof navigator === "undefined" ? true : navigator.onLine),
+  );
 
   async function refresh() {
     setBooks(await listBooks());
@@ -20,6 +29,36 @@ export function Library({ onOpen }: { onOpen: (book: Book) => void }) {
 
   useEffect(() => {
     void refresh().catch((err) => setError(String(err)));
+  }, []);
+
+  useEffect(() => {
+    const onBooksChanged = () => {
+      void refresh().catch((err) => setError(String(err)));
+    };
+    window.addEventListener(BOOKS_CHANGED_EVENT, onBooksChanged);
+    return () => window.removeEventListener(BOOKS_CHANGED_EVENT, onBooksChanged);
+  }, []);
+
+  useEffect(() => subscribeOnline(() => setOnline(navigator.onLine)), []);
+
+  useEffect(() => {
+    const onDragOver = (event: DragEvent) => {
+      if ([...(event.dataTransfer?.types ?? [])].includes("Files")) event.preventDefault();
+    };
+    const onDrop = (event: DragEvent) => {
+      event.preventDefault();
+      const files = Array.from(event.dataTransfer?.files ?? []).filter((file) =>
+        file.name.toLowerCase().endsWith(".epub"),
+      );
+      if (!files.length) return;
+      void addFiles(files);
+    };
+    window.addEventListener("dragover", onDragOver);
+    window.addEventListener("drop", onDrop);
+    return () => {
+      window.removeEventListener("dragover", onDragOver);
+      window.removeEventListener("drop", onDrop);
+    };
   }, []);
 
   const filtered = useMemo(() => {
@@ -30,6 +69,21 @@ export function Library({ onOpen }: { onOpen: (book: Book) => void }) {
       return hay.includes(needle);
     });
   }, [books, query]);
+
+  async function addFiles(files: File[]) {
+    setError(null);
+    setBusy(true);
+    try {
+      const imported = await importFromFiles(files);
+      for (const book of imported) {
+        setBooks((current) => [book, ...current.filter((item) => item.id !== book.id)]);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
 
   async function onImport() {
     setError(null);
@@ -66,16 +120,20 @@ export function Library({ onOpen }: { onOpen: (book: Book) => void }) {
           <p className="text-xs uppercase tracking-[0.28em] text-oxblood">Private library</p>
           <h1 className="mt-2 font-serif text-5xl tracking-tight">Bookworm</h1>
           <p className="mt-2 max-w-xl text-ink-soft">
-            Import an EPUB — books and voice models stay on this device for offline reading.
+            Import an EPUB and install Bookworm. Books and the voice model stay on this device and
+            keep working without a network.
           </p>
         </div>
-        <button
-          onClick={() => void onImport()}
-          disabled={busy}
-          className="rounded-full bg-oxblood px-5 py-2.5 text-sm font-medium text-sepia shadow-sm transition hover:bg-oxblood-dark disabled:opacity-60"
-        >
-          {busy ? "Importing…" : "Import EPUB"}
-        </button>
+        <div className="flex flex-wrap items-center gap-3">
+          <InstallApp />
+          <button
+            onClick={() => void onImport()}
+            disabled={busy}
+            className="rounded-full bg-oxblood px-5 py-2.5 text-sm font-medium text-sepia shadow-sm transition hover:bg-oxblood-dark disabled:opacity-60"
+          >
+            {busy ? "Importing…" : "Import EPUB"}
+          </button>
+        </div>
       </header>
 
       <div className="mx-auto mt-10 max-w-6xl">
@@ -86,14 +144,20 @@ export function Library({ onOpen }: { onOpen: (book: Book) => void }) {
           className="w-full max-w-md rounded-full border border-paper-deep bg-white/50 px-4 py-2 text-sm outline-none ring-oxblood/30 placeholder:text-ink-soft/70 focus:ring-2"
         />
         {error ? <p className="mt-3 text-sm text-oxblood">{error}</p> : null}
+        {!online ? (
+          <p className="mt-3 text-sm text-ink-soft">
+            You’re offline. Imported books still open; speech needs the voice model from a previous
+            visit.
+          </p>
+        ) : null}
       </div>
 
       {filtered.length === 0 ? (
         <div className="mx-auto mt-24 max-w-lg text-center">
           <p className="font-serif text-3xl">An empty shelf</p>
           <p className="mt-3 text-ink-soft">
-            Drop in an EPUB and Bookworm will read its title, author, and cover from the file.
-            If the book has no cover image, a letter cover is used instead.
+            Drop in an EPUB — or install the app and add files later. Bookworm reads title, author,
+            and cover from the file. If the book has no cover image, a letter cover is used instead.
           </p>
         </div>
       ) : (
