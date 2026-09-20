@@ -22,3 +22,8 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Recorded product demos (regenerate with pnpm demo:record)
+/demo/*.webm
+/demo/*.mp4
+/demo/.chrome-profile
