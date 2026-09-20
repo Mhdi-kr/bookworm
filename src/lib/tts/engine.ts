@@ -3,6 +3,7 @@ import { getMeta, modelCacheStats, preloadModelCacheIntoMemory, requestPersisten
 import { loadReaderSettings, saveReaderSettings } from "../readerSettings";
 import KokoroWorker from "./kokoro.worker.ts?worker";
 import { ttsCacheKey } from "./split";
+import { timeStretch } from "./stretch";
 import { encodeWav } from "./wav";
 
 type Status = "idle" | "loading" | "preparing" | "ready" | "speaking" | "paused" | "error";
@@ -30,11 +31,30 @@ export type SpeakSequenceCallbacks = {
   onBlockLoading?: (index: number) => void;
 };
 
+type HeldClip = {
+  pcm: Float32Array;
+  sampleRate: number;
+  generation: number;
+  blockIndex?: number;
+};
+
+type ScheduledClip = {
+  source: AudioBufferSourceNode;
+  buffer: AudioBuffer;
+  pcm: Float32Array;
+  sampleRate: number;
+  startAt: number;
+  generation: number;
+  blockIndex?: number;
+};
+
 const initialSpeechPrefs = loadReaderSettings();
 
 /**
  * Kokoro TTS playback: Web Audio for reliable output, HTMLAudio fallback for
- * lock-screen / Media Session on mobile webviews.
+ * lock-screen / Media Session on mobile webviews. Synthesis is always 1×;
+ * tempo is applied with pitch-preserving time-stretch (Web Audio) or
+ * `preservesPitch` (HTML).
  */
 export class TtsEngine {
   private worker: Worker | null = null;
@@ -44,7 +64,8 @@ export class TtsEngine {
   private pendingMeta: MediaMeta | null = null;
   private workerReady = false;
   private ctx: AudioContext | null = null;
-  private sources: AudioBufferSourceNode[] = [];
+  private clips: ScheduledClip[] = [];
+  private held: HeldClip[] = [];
   private nextTime = 0;
   private htmlAudio: HTMLAudioElement | null = null;
   private htmlQueue: Array<{ url: string; blockIndex?: number }> = [];
@@ -187,7 +208,7 @@ export class TtsEngine {
   prefetch(text: string) {
     const trimmed = text.replace(/\s+/g, " ").trim();
     if (!trimmed || !this.workerReady) return;
-    const key = ttsCacheKey(trimmed, this.voice, this.speed);
+    const key = ttsCacheKey(trimmed, this.voice);
     if (this.prefetchKey === key) return;
     this.prefetchKey = key;
     this.prefetchId += 1;
@@ -195,7 +216,6 @@ export class TtsEngine {
       type: "prefetch",
       text: trimmed,
       voice: this.voice,
-      speed: this.speed,
       prefetchId: this.prefetchId,
     });
   }
@@ -259,7 +279,6 @@ export class TtsEngine {
       type: "speak",
       text: trimmed,
       voice: this.voice,
-      speed: this.speed,
       generation,
     });
     return result;
@@ -294,7 +313,6 @@ export class TtsEngine {
         type: "speakSequence",
         texts: trimmed,
         voice: this.voice,
-        speed: this.speed,
         generation,
       });
     };
@@ -319,28 +337,49 @@ export class TtsEngine {
 
   pause() {
     if (this.status !== "speaking" && this.status !== "preparing") return;
-    if (this.status === "preparing") {
-      this.generation += 1;
-      this.worker?.postMessage({ type: "cancel", generation: this.generation });
-      this.rejectWaiters(false);
-      this.streamDone = false;
-    }
-    void this.audioContext().suspend();
-    this.htmlAudio?.pause();
     this.status = "paused";
+    this.holdScheduledClips();
+    this.htmlAudio?.pause();
     this.syncMediaSession();
     this.emit();
   }
 
   async resume() {
     if (this.status !== "paused") return;
-    await this.unlockAudio();
-    void this.audioContext().resume();
-    if (this.useHtmlFallback) void this.pumpHtml();
-    this.status = "speaking";
-    void this.requestWakeLock();
+    if (this.useHtmlFallback) {
+      this.status = "speaking";
+      void this.requestWakeLock();
+      const html = this.htmlAudio;
+      if (this.htmlPlaying && html?.src) {
+        this.applyHtmlPlaybackRate(html);
+        try {
+          await html.play();
+        } catch {
+          this.htmlPlaying = false;
+          void this.pumpHtml();
+        }
+      } else {
+        void this.pumpHtml();
+      }
+    } else {
+      const queued = this.held;
+      this.held = [];
+      const ctx = this.audioContext();
+      if (ctx.state === "suspended") {
+        await ctx.resume();
+      }
+      const late = this.held;
+      this.held = [];
+      this.status = "speaking";
+      void this.requestWakeLock();
+      this.nextTime = ctx.currentTime;
+      for (const item of queued.concat(late)) {
+        this.startClip(item.pcm, item.sampleRate, item.generation, item.blockIndex);
+      }
+    }
     this.syncMediaSession();
     this.emit();
+    this.maybeFinishUtterance(this.generation);
   }
 
   stop() {
@@ -358,8 +397,8 @@ export class TtsEngine {
   }
 
   setSpeed(speed: number) {
-    this.speed = speed;
-    saveReaderSettings({ speed });
+    this.speed = saveReaderSettings({ speed }).speed;
+    this.applyPlaybackSpeed();
     this.emit();
   }
 
@@ -380,7 +419,7 @@ export class TtsEngine {
     if (this.status === "paused") return;
     if (this.useHtmlFallback) {
       if (this.htmlPlaying || this.htmlQueue.length > 0) return;
-    } else if (this.sources.length > 0) {
+    } else if (this.clips.length > 0 || this.held.length > 0) {
       return;
     }
     this.status = "ready";
@@ -406,6 +445,7 @@ export class TtsEngine {
     audio.setAttribute("playsinline", "true");
     audio.preload = "auto";
     audio.style.display = "none";
+    this.applyHtmlPlaybackRate(audio);
     document.body.appendChild(audio);
     audio.addEventListener("ended", () => {
       this.htmlPlaying = false;
@@ -495,14 +535,16 @@ export class TtsEngine {
     this.streamDone = false;
     this.clearPlayNotifyTimers();
     this.scheduledPlayBlockIndex = -1;
-    this.sources.forEach((source) => {
+    this.clips.forEach((clip) => {
+      clip.source.onended = null;
       try {
-        source.stop();
+        clip.source.stop();
       } catch {
         /* already stopped */
       }
     });
-    this.sources = [];
+    this.clips = [];
+    this.held = [];
     this.nextTime = 0;
     if (this.ctx && this.ctx.state !== "closed") {
       void this.ctx.suspend();
@@ -518,18 +560,157 @@ export class TtsEngine {
     this.htmlPlaying = false;
   }
 
-  private playChunkWeb(
-    audio: Float32Array,
+  private holdScheduledClips() {
+    if (!this.ctx) {
+      this.clips = [];
+      return;
+    }
+    const now = this.ctx.currentTime;
+    const remaining: HeldClip[] = [];
+    const ordered = [...this.clips].sort((a, b) => a.startAt - b.startAt);
+    for (const clip of ordered) {
+      clip.source.onended = null;
+      try {
+        clip.source.stop();
+      } catch {
+        /* already stopped */
+      }
+      try {
+        clip.source.disconnect();
+      } catch {
+        /* already disconnected */
+      }
+      if (clip.startAt > now) {
+        remaining.push({
+          pcm: clip.pcm.slice(),
+          sampleRate: clip.sampleRate,
+          generation: clip.generation,
+          blockIndex: clip.blockIndex,
+        });
+        continue;
+      }
+      const elapsed = Math.max(0, now - clip.startAt);
+      const frac = clip.buffer.duration > 0 ? Math.min(1, elapsed / clip.buffer.duration) : 1;
+      const offset = Math.min(clip.pcm.length, Math.floor(frac * clip.pcm.length));
+      if (offset < clip.pcm.length - 32) {
+        remaining.push({
+          pcm: clip.pcm.slice(offset),
+          sampleRate: clip.sampleRate,
+          generation: clip.generation,
+          blockIndex: clip.blockIndex,
+        });
+      }
+    }
+    this.clips = [];
+    this.nextTime = now;
+    this.clearPlayNotifyTimers();
+    this.held = remaining.concat(this.held);
+  }
+
+  private applyHtmlPlaybackRate(audio: HTMLAudioElement) {
+    const pitched = audio as HTMLAudioElement & {
+      preservesPitch?: boolean;
+      mozPreservesPitch?: boolean;
+      webkitPreservesPitch?: boolean;
+    };
+    pitched.preservesPitch = true;
+    pitched.mozPreservesPitch = true;
+    pitched.webkitPreservesPitch = true;
+    audio.playbackRate = this.speed;
+    audio.defaultPlaybackRate = this.speed;
+  }
+
+  private applyPlaybackSpeed() {
+    if (this.htmlAudio) this.applyHtmlPlaybackRate(this.htmlAudio);
+    if (!this.ctx || this.clips.length === 0) return;
+
+    const ctx = this.ctx;
+    const now = ctx.currentTime;
+    const playing: ScheduledClip[] = [];
+    const pending: ScheduledClip[] = [];
+    for (const clip of this.clips) {
+      if (clip.startAt <= now) playing.push(clip);
+      else pending.push(clip);
+    }
+
+    const restart: Array<{
+      pcm: Float32Array;
+      sampleRate: number;
+      generation: number;
+      blockIndex?: number;
+    }> = [];
+
+    for (const clip of playing) {
+      const elapsed = Math.max(0, now - clip.startAt);
+      const frac = clip.buffer.duration > 0 ? Math.min(1, elapsed / clip.buffer.duration) : 1;
+      const offset = Math.min(clip.pcm.length, Math.floor(frac * clip.pcm.length));
+      clip.source.onended = null;
+      try {
+        clip.source.stop();
+      } catch {
+        /* already stopped */
+      }
+      try {
+        clip.source.disconnect();
+      } catch {
+        /* already disconnected */
+      }
+      if (offset < clip.pcm.length - 32) {
+        restart.push({
+          pcm: clip.pcm.subarray(offset),
+          sampleRate: clip.sampleRate,
+          generation: clip.generation,
+          blockIndex: clip.blockIndex,
+        });
+      }
+    }
+
+    for (const clip of pending) {
+      clip.source.onended = null;
+      try {
+        clip.source.stop();
+      } catch {
+        /* already stopped */
+      }
+      try {
+        clip.source.disconnect();
+      } catch {
+        /* already disconnected */
+      }
+      restart.push({
+        pcm: clip.pcm,
+        sampleRate: clip.sampleRate,
+        generation: clip.generation,
+        blockIndex: clip.blockIndex,
+      });
+    }
+
+    this.clips = [];
+    this.nextTime = now;
+    this.clearPlayNotifyTimers();
+    this.scheduledPlayBlockIndex = -1;
+
+    for (const item of restart) {
+      this.startClip(item.pcm, item.sampleRate, item.generation, item.blockIndex);
+    }
+  }
+
+  private startClip(
+    pcm: Float32Array,
     sampleRate: number,
     generation: number,
     blockIndex?: number,
   ) {
     const ctx = this.audioContext();
-    if (ctx.state === "suspended") void ctx.resume();
-    const buffer = ctx.createBuffer(1, audio.length, sampleRate);
-    buffer.copyToChannel(audio, 0);
+    const stretched = timeStretch(pcm, this.speed, sampleRate);
+    const frames = Math.max(1, stretched.length);
+    const buffer = ctx.createBuffer(1, frames, sampleRate);
+    if (stretched.length > 0) {
+      buffer.getChannelData(0).set(stretched.subarray(0, frames));
+    }
     const source = ctx.createBufferSource();
     source.buffer = buffer;
+    source.playbackRate.value = 1;
     source.connect(ctx.destination);
     const startAt = Math.max(ctx.currentTime, this.nextTime);
     if (typeof blockIndex === "number") {
@@ -537,11 +718,23 @@ export class TtsEngine {
     }
     source.start(startAt);
     this.nextTime = startAt + buffer.duration;
-    this.sources.push(source);
+    this.clips.push({ source, buffer, pcm, sampleRate, startAt, generation, blockIndex });
     source.onended = () => {
-      this.sources = this.sources.filter((item) => item !== source);
+      if (this.status === "paused") return;
+      this.clips = this.clips.filter((item) => item.source !== source);
       this.maybeFinishUtterance(generation);
     };
+  }
+
+  private playChunkWeb(
+    audio: Float32Array,
+    sampleRate: number,
+    generation: number,
+    blockIndex?: number,
+  ) {
+    const ctx = this.audioContext();
+    if (ctx.state === "suspended" && this.status !== "paused") void ctx.resume();
+    this.startClip(audio, sampleRate, generation, blockIndex);
   }
 
   private enqueueHtmlChunk(
@@ -569,6 +762,7 @@ export class TtsEngine {
       this.notifyBlockPlay(next.blockIndex, generation);
     }
     audio.src = next.url;
+    this.applyHtmlPlaybackRate(audio);
     this.syncMediaSession();
     try {
       await audio.play();
@@ -587,6 +781,14 @@ export class TtsEngine {
     generation: number,
     blockIndex?: number,
   ) {
+    if (this.status === "paused") {
+      if (this.useHtmlFallback) {
+        this.enqueueHtmlChunk(audio, sampleRate, generation, blockIndex);
+      } else {
+        this.held.push({ pcm: audio, sampleRate, generation, blockIndex });
+      }
+      return;
+    }
     if (this.useHtmlFallback) {
       this.enqueueHtmlChunk(audio, sampleRate, generation, blockIndex);
       return;
@@ -666,7 +868,6 @@ export class TtsEngine {
           type: "speakSequence",
           texts,
           voice: this.voice,
-          speed: this.speed,
           generation: this.generation,
         });
       } else if (this.pendingText) {
@@ -683,7 +884,6 @@ export class TtsEngine {
           type: "speak",
           text,
           voice: this.voice,
-          speed: this.speed,
           generation: this.generation,
         });
       } else {

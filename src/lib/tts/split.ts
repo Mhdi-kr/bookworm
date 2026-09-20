@@ -22,6 +22,6 @@ export function splitForTts(text: string): string[] {
   return parts;
 }
 
-export function ttsCacheKey(text: string, voice: string, speed: number): string {
-  return `${voice}:${speed}:${text.replace(/\s+/g, " ").trim()}`;
+export function ttsCacheKey(text: string, voice: string): string {
+  return `${voice}:${text.replace(/\s+/g, " ").trim()}`;
 }

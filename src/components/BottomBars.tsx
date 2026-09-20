@@ -163,8 +163,7 @@ function PlaybackBar() {
   const showPlayIcon = transport === "paused" || transport === "idle";
   const pauseEnabled =
     transport === "playing" || transport === "paused" || transport === "buffering";
-  const pauseLabel =
-    transport === "paused" ? "Resume" : transport === "buffering" ? "Cancel" : "Pause";
+  const pauseLabel = transport === "paused" ? "Resume" : "Pause";
 
   return (
     <DimShell>

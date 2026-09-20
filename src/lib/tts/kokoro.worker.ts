@@ -2,17 +2,17 @@
 
 import { installModelFetchCache, preloadModelCacheIntoMemory } from "../offline/idb";
 import type { VoiceInfo } from "../../types";
+import { AudioLruCache } from "./audioCache";
 import { splitForTts, ttsCacheKey } from "./split";
 
 type Incoming =
   | { type: "init"; preferredDevice?: "webgpu" | "wasm" }
-  | { type: "prefetch"; text: string; voice: string; speed: number; prefetchId: number }
-  | { type: "speak"; text: string; voice: string; speed: number; generation: number }
+  | { type: "prefetch"; text: string; voice: string; prefetchId: number }
+  | { type: "speak"; text: string; voice: string; generation: number }
   | {
       type: "speakSequence";
       texts: string[];
       voice: string;
-      speed: number;
       generation: number;
     }
   | { type: "cancel"; generation: number };
@@ -29,13 +29,6 @@ type VoiceMeta = {
   gender: string;
 };
 
-type PrefetchSlot = {
-  key: string;
-  prefetchId: number;
-  first: { audio: Float32Array; sampleRate: number; text: string };
-  rest: string[];
-};
-
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let tts: any = null;
 let initDone = false;
@@ -46,8 +39,9 @@ let activeGeneration = 0;
 let speakRunId = 0;
 let speakChain: Promise<void> = Promise.resolve();
 let cacheReady = false;
-let prefetchSlot: PrefetchSlot | null = null;
 let activePrefetchId = 0;
+const audioLru = new AudioLruCache();
+const inflight = new Map<string, Promise<SynthesizedChunk>>();
 
 const WEBGPU_ADAPTER_TIMEOUT_MS = 5_000;
 
@@ -292,44 +286,68 @@ function postReady() {
   self.postMessage({ type: "ready", voices: cachedVoices, device: inferenceDevice });
 }
 
-async function synthesizeBlock(
-  text: string,
-  voice: string,
-  speed: number,
-): Promise<SynthesizedChunk[]> {
-  const chunks: SynthesizedChunk[] = [];
-  for (const part of splitForTts(text)) {
-    const raw = await tts.generate(part, { voice: voice as "af_heart", speed });
-    chunks.push({
+async function synthesizePart(part: string, voice: string): Promise<SynthesizedChunk> {
+  const key = ttsCacheKey(part, voice);
+  const hit = audioLru.get(key);
+  if (hit) {
+    return { text: part, audio: hit.audio, sampleRate: hit.sampleRate };
+  }
+
+  const pending = inflight.get(key);
+  if (pending) return pending;
+
+  const task = (async () => {
+    const raw = await tts.generate(part, { voice: voice as "af_heart", speed: 1 });
+    const chunk: SynthesizedChunk = {
       text: part,
       audio: new Float32Array(raw.audio),
       sampleRate: raw.sampling_rate,
-    });
+    };
+    audioLru.set(key, { audio: chunk.audio, sampleRate: chunk.sampleRate });
+    return chunk;
+  })().finally(() => {
+    inflight.delete(key);
+  });
+
+  inflight.set(key, task);
+  return task;
+}
+
+async function synthesizeBlock(text: string, voice: string): Promise<SynthesizedChunk[]> {
+  const chunks: SynthesizedChunk[] = [];
+  for (const part of splitForTts(text)) {
+    chunks.push(await synthesizePart(part, voice));
   }
   return chunks;
+}
+
+function isFullyCached(text: string, voice: string): boolean {
+  const parts = splitForTts(text);
+  return parts.length > 0 && parts.every((part) => audioLru.has(ttsCacheKey(part, voice)));
 }
 
 async function speakSequencePipelined(
   texts: string[],
   voice: string,
-  speed: number,
   generation: number,
   runId: number,
 ) {
   if (!texts.length) return;
 
-  let nextPromise = synthesizeBlock(texts[0], voice, speed);
+  let nextPromise = synthesizeBlock(texts[0], voice);
   for (let blockIndex = 0; blockIndex < texts.length; blockIndex += 1) {
     if (runId !== speakRunId || activeGeneration !== generation) return;
     const chunks = await nextPromise;
     if (blockIndex + 1 < texts.length) {
-      // Signal that the next block is synthesizing while current audio plays.
-      self.postMessage({
-        type: "blockLoading",
-        generation,
-        blockIndex: blockIndex + 1,
-      });
-      nextPromise = synthesizeBlock(texts[blockIndex + 1], voice, speed);
+      const nextText = texts[blockIndex + 1];
+      if (!isFullyCached(nextText, voice)) {
+        self.postMessage({
+          type: "blockLoading",
+          generation,
+          blockIndex: blockIndex + 1,
+        });
+      }
+      nextPromise = synthesizeBlock(nextText, voice);
     }
     self.postMessage({
       type: "blockStart",
@@ -355,7 +373,6 @@ async function speakSequencePipelined(
 async function synthesizeParts(
   parts: string[],
   voice: string,
-  speed: number,
   generation: number,
   runId: number,
   startIndex = 0,
@@ -363,9 +380,12 @@ async function synthesizeParts(
   for (let index = startIndex; index < parts.length; index += 1) {
     if (runId !== speakRunId || activeGeneration !== generation) return;
     const part = parts[index];
-    const raw = await tts.generate(part, { voice: voice as "af_heart", speed });
+    const chunk = await synthesizePart(part, voice);
     if (runId !== speakRunId || activeGeneration !== generation) return;
-    postChunk(generation, part, raw);
+    postChunk(generation, part, {
+      audio: chunk.audio,
+      sampling_rate: chunk.sampleRate,
+    });
   }
 }
 
@@ -417,38 +437,25 @@ self.onmessage = async (event: MessageEvent<Incoming>) => {
     if (message.type === "cancel") {
       activeGeneration = message.generation;
       speakRunId += 1;
-      prefetchSlot = null;
       return;
     }
 
     if (message.type === "prefetch") {
       if (!tts) return;
-      const key = ttsCacheKey(message.text, message.voice, message.speed);
-      if (prefetchSlot?.key === key) return;
       const prefetchId = message.prefetchId;
       activePrefetchId = prefetchId;
-      const parts = splitForTts(message.text);
-      const first = parts[0];
+      const first = splitForTts(message.text)[0];
       if (!first) return;
       try {
-        const raw = await tts.generate(first, {
-          voice: message.voice as "af_heart",
-          speed: message.speed,
-        });
+        await synthesizePart(first, message.voice);
         if (prefetchId !== activePrefetchId) return;
-        prefetchSlot = {
-          key,
+        self.postMessage({
+          type: "prefetched",
           prefetchId,
-          first: {
-            audio: new Float32Array(raw.audio),
-            sampleRate: raw.sampling_rate,
-            text: first,
-          },
-          rest: parts.slice(1),
-        };
-        self.postMessage({ type: "prefetched", prefetchId, key });
+          key: ttsCacheKey(message.text, message.voice),
+        });
       } catch {
-        prefetchSlot = null;
+        /* hover prefetch is best-effort */
       }
       return;
     }
@@ -460,12 +467,10 @@ self.onmessage = async (event: MessageEvent<Incoming>) => {
       const generation = message.generation;
       const texts = message.texts;
       const voice = message.voice;
-      const speed = message.speed;
-      prefetchSlot = null;
       enqueueSpeak(async () => {
         try {
           if (!tts) throw new Error("Kokoro is not ready");
-          await speakSequencePipelined(texts, voice, speed, generation, runId);
+          await speakSequencePipelined(texts, voice, generation, runId);
           if (runId === speakRunId && activeGeneration === generation) {
             self.postMessage({ type: "done", generation });
           }
@@ -488,25 +493,12 @@ self.onmessage = async (event: MessageEvent<Incoming>) => {
       const generation = message.generation;
       const text = message.text;
       const voice = message.voice;
-      const speed = message.speed;
-      const key = ttsCacheKey(text, voice, speed);
       enqueueSpeak(async () => {
         try {
           if (!tts) throw new Error("Kokoro is not ready");
           if (runId !== speakRunId || activeGeneration !== generation) return;
 
-          const cached = prefetchSlot?.key === key ? prefetchSlot : null;
-          prefetchSlot = null;
-
-          if (cached) {
-            postChunk(generation, cached.first.text, {
-              audio: cached.first.audio,
-              sampling_rate: cached.first.sampleRate,
-            });
-            await synthesizeParts(cached.rest, voice, speed, generation, runId, 0);
-          } else {
-            await synthesizeParts(splitForTts(text), voice, speed, generation, runId, 0);
-          }
+          await synthesizeParts(splitForTts(text), voice, generation, runId, 0);
 
           if (runId === speakRunId && activeGeneration === generation) {
             self.postMessage({ type: "done", generation });
