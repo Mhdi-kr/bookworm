@@ -442,7 +442,11 @@ export const EpubReader = forwardRef<
       if (width <= 0 || height <= 0 || (width === lastWidth && height === lastHeight)) return;
       lastWidth = width;
       lastHeight = height;
-      rendition.resize(width, height);
+      try {
+        rendition.resize(width, height);
+      } catch {
+        /* epubjs throws in Safari if the view manager is not ready yet */
+      }
     });
     observer.observe(host);
     return () => observer.disconnect();

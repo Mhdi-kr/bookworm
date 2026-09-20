@@ -22,11 +22,32 @@ function pickBookFiles(): Promise<File[]> {
   return new Promise((resolve) => {
     const input = document.createElement("input");
     input.type = "file";
-    input.accept = ".epub,application/epub+zip";
+    input.accept = ".epub,.EPUB,application/epub+zip";
     input.multiple = true;
-    input.addEventListener("change", () => {
-      resolve(Array.from(input.files ?? []));
+    input.setAttribute("aria-hidden", "true");
+    input.tabIndex = -1;
+    // Safari ignores click() on a file input that is not in the document, and
+    // iOS Safari often skips display:none inputs too.
+    Object.assign(input.style, {
+      position: "fixed",
+      left: "0",
+      top: "0",
+      width: "1px",
+      height: "1px",
+      opacity: "0",
     });
+    document.body.appendChild(input);
+
+    let settled = false;
+    const finish = (files: File[]) => {
+      if (settled) return;
+      settled = true;
+      input.remove();
+      resolve(files);
+    };
+
+    input.addEventListener("change", () => finish(Array.from(input.files ?? [])));
+    input.addEventListener("cancel", () => finish([]));
     input.click();
   });
 }
@@ -74,12 +95,19 @@ async function bookFromFile(file: File): Promise<Book> {
   }
   await requestPersistentStorage();
   const now = Date.now();
+  const bytes = new Uint8Array(await file.arrayBuffer());
   let meta;
   try {
-    meta = await readEpubMetadata(await file.arrayBuffer());
+    const forMeta = new Uint8Array(bytes.byteLength);
+    forMeta.set(bytes);
+    meta = await readEpubMetadata(forMeta.buffer);
   } catch {
     meta = null;
   }
+  const storedCopy = new Uint8Array(bytes.byteLength);
+  storedCopy.set(bytes);
+  const epubBlob = new Blob([storedCopy], { type: file.type || "application/epub+zip" });
+  const coverBlob = meta?.coverBlob ?? null;
   const stored: StoredWebBook = {
     id: crypto.randomUUID(),
     format: "epub",
@@ -90,14 +118,14 @@ async function bookFromFile(file: File): Promise<Book> {
     publisher: meta?.publisher ?? null,
     publishedDate: meta?.publishedDate ?? null,
     language: meta?.language ?? null,
-    coverBlob: meta?.coverBlob ?? null,
-    coverSource: meta?.coverBlob ? "file" : null,
+    coverBlob,
+    coverSource: coverBlob ? "file" : null,
     pageCount: meta?.pageCount ?? null,
     addedAt: now,
     lastOpenedAt: null,
     updatedAt: now,
     progress: null,
-    epubBlob: file,
+    epubBlob,
   };
   await putStoredBook(stored);
   return bookFromStored(stored);

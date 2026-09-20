@@ -1,5 +1,6 @@
 /// <reference lib="webworker" />
 
+import { isWebKit } from "../browser";
 import { installModelFetchCache, preloadModelCacheIntoMemory } from "../offline/idb";
 import type { VoiceInfo } from "../../types";
 import { AudioLruCache } from "./audioCache";
@@ -161,14 +162,38 @@ function postChunk(
   );
 }
 
-function isSafariLike(): boolean {
-  const ua = self.navigator?.userAgent ?? "";
-  // Safari / iOS WebKit (exclude Chromium which also contains "Safari")
-  return /Safari/i.test(ua) && !/Chrome|Chromium|CriOS|Edg|Firefox|FxiOS/i.test(ua);
+/** Skip Cache API writes for huge ONNX bodies — Safari hangs on Cache.put of 90–300MB. */
+function softenCacheApi() {
+  if (!("Cache" in self)) return;
+  const origPut = Cache.prototype.put;
+  Cache.prototype.put = function put(request, response) {
+    try {
+      const url =
+        typeof request === "string"
+          ? request
+          : request instanceof Request
+            ? request.url
+            : request instanceof URL
+              ? request.href
+              : "";
+      const length = Number(response.headers.get("content-length") || 0);
+      if (/\.onnx(\?|$)/i.test(url) || length > 16 * 1024 * 1024) {
+        return Promise.resolve();
+      }
+    } catch {
+      /* fall through to native put */
+    }
+    return origPut.call(this, request, response).catch(() => undefined);
+  };
+}
+
+function wasmAssetDir(): string {
+  return new URL("assets/", new URL(import.meta.env.BASE_URL, self.location.origin)).href;
 }
 
 async function loadTts(device: "webgpu" | "wasm") {
-  const { KokoroTTS } = await import("kokoro-js");
+  const { KokoroTTS, env } = await import("kokoro-js");
+  env.wasmPaths = wasmAssetDir();
   const aggregator = createProgressAggregator();
   return KokoroTTS.from_pretrained("onnx-community/Kokoro-82M-v1.0-ONNX", {
     dtype: device === "webgpu" ? "fp32" : "q8",
@@ -224,9 +249,9 @@ async function webGpuAdapterAvailable(): Promise<boolean> {
 }
 
 async function initTts(preferred?: "webgpu" | "wasm"): Promise<"webgpu" | "wasm"> {
-  // Safari WebGPU + fp32 (~325MB) is unreliable; prefer quantized WASM unless
+  // Safari / iOS WebGPU + fp32 (~325MB) is unreliable; prefer quantized WASM unless
   // the user already succeeded with WebGPU on this device.
-  if (preferred === "wasm" || (preferred !== "webgpu" && isSafariLike())) {
+  if (preferred === "wasm" || (preferred !== "webgpu" && isWebKit())) {
     self.postMessage({
       type: "progress",
       progress: { status: "initiate", file: "CPU · WASM" },
@@ -391,6 +416,7 @@ async function synthesizeParts(
 
 async function ensureCache() {
   if (cacheReady) return;
+  softenCacheApi();
   await installModelFetchCache({
     onCacheHit: (url) => {
       const file = url.split("/").pop() || url;
@@ -422,7 +448,10 @@ self.onmessage = async (event: MessageEvent<Incoming>) => {
       initInProgress = true;
       try {
         await ensureCache();
-        await preloadModelCacheIntoMemory();
+        // Loading every cached ONNX blob into the worker heap on boot OOMs Safari.
+        if (!isWebKit()) {
+          await preloadModelCacheIntoMemory();
+        }
         inferenceDevice = await initTts(message.preferredDevice);
         await warmInference();
         cachedVoices = voicesFromModel();

@@ -1,5 +1,5 @@
 import type { VoiceInfo } from "../../types";
-import { getMeta, modelCacheStats, preloadModelCacheIntoMemory, requestPersistentStorage, setMeta } from "../offline/idb";
+import { getMeta, modelCacheStats, requestPersistentStorage, setMeta } from "../offline/idb";
 import { loadReaderSettings, saveReaderSettings } from "../readerSettings";
 import KokoroWorker from "./kokoro.worker.ts?worker";
 import { ttsCacheKey } from "./split";
@@ -171,9 +171,8 @@ export class TtsEngine {
     this.downloadLabel = "Preparing voice cache…";
     this.emit();
     void requestPersistentStorage();
-    const [stats, , preferredDevice] = await Promise.all([
+    const [stats, preferredDevice] = await Promise.all([
       modelCacheStats(),
-      preloadModelCacheIntoMemory(),
       getMeta<"webgpu" | "wasm">("tts-inference-device"),
     ]);
     this.cachedModelFiles = stats.files;
@@ -185,7 +184,10 @@ export class TtsEngine {
     this.worker = new KokoroWorker();
     this.worker.onmessage = (event: MessageEvent) => this.onMessage(event.data);
     this.worker.onerror = (event: ErrorEvent) => {
-      this.error = event.message || "Kokoro worker failed to start";
+      this.error =
+        event.message && event.message !== "Script error."
+          ? event.message
+          : "Voice engine failed to start in this browser";
       this.status = "error";
       this.downloadLabel = "";
       this.worker?.terminate();
