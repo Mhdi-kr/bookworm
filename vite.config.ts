@@ -21,7 +21,7 @@ export default defineConfig(async () => ({
     VitePWA({
       registerType: "autoUpdate",
       injectRegister: false,
-      includeAssets: ["samples/little-test-book.epub", "tauri.svg"],
+      includeAssets: ["tauri.svg"],
       manifest: {
         name: "Bookworm",
         short_name: "Bookworm",
@@ -40,7 +40,7 @@ export default defineConfig(async () => ({
         ],
       },
       workbox: {
-        globPatterns: ["**/*.{js,css,html,ico,svg,woff2,epub,wasm}"],
+        globPatterns: ["**/*.{js,css,html,ico,svg,woff2,wasm}"],
         // kokoro.web.js is ~2.1 MiB; default precache cap is 2 MiB
         maximumFileSizeToCacheInBytes: 3 * 1024 * 1024,
         navigateFallback: "index.html",

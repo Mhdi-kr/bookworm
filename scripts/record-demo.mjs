@@ -24,6 +24,8 @@ const outFile = path.join(outDir, "bookworm-demo.webm");
 const baseUrl = process.env.BOOKWORM_URL ?? "http://127.0.0.1:1420";
 const viewport = { width: 1440, height: 900 };
 
+const demoEpub = path.join(root, "scripts", "fixtures", "demo-book.epub");
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -71,6 +73,23 @@ function epub(page) {
 
 async function waitForBook(page) {
   await page.getByRole("button", { name: /The Open Page/ }).waitFor({ timeout: 20_000 });
+}
+
+async function importDemoBook(page) {
+  await page.getByRole("button", { name: "Import EPUB" }).waitFor({ timeout: 15_000 });
+  const book = page.getByRole("button", { name: /The Open Page/ });
+  const empty = page.getByText("An empty shelf");
+  await Promise.race([
+    book.waitFor({ timeout: 10_000 }),
+    empty.waitFor({ timeout: 10_000 }),
+  ]).catch(() => {});
+  if (await book.isVisible()) return;
+  const [chooser] = await Promise.all([
+    page.waitForEvent("filechooser"),
+    page.getByRole("button", { name: "Import EPUB" }).click(),
+  ]);
+  await chooser.setFiles(demoEpub);
+  await waitForBook(page);
 }
 
 async function openSettings(page) {
@@ -144,7 +163,7 @@ async function main() {
     content: "[data-reader-tap-hint]{display:none !important}",
   });
 
-  await waitForBook(page);
+  await importDemoBook(page);
   await caption(page, "A private library — title, author, and cover come from the EPUB");
   await sleep(2200);
 

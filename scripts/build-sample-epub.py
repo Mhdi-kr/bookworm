@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build public/samples/little-test-book.epub — a short in-app tour of Bookworm."""
+"""Build scripts/fixtures/demo-book.epub for `pnpm demo:record` (not shipped in the app)."""
 
 from __future__ import annotations
 
@@ -8,9 +8,9 @@ import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-OUT = ROOT / "public" / "samples" / "little-test-book.epub"
-COVER_SVG = ROOT / "public" / "samples" / "cover.svg"
-COVER_PNG = ROOT / "public" / "samples" / "cover.png"
+OUT = ROOT / "scripts" / "fixtures" / "demo-book.epub"
+COVER_SVG = ROOT / "scripts" / "fixtures" / ".cover.svg"
+COVER_PNG = ROOT / "scripts" / "fixtures" / ".cover.png"
 
 TITLE = "The Open Page"
 AUTHOR = "Ada Lovelace"
@@ -232,8 +232,8 @@ def render_cover() -> bytes:
 
 
 def build() -> None:
-    cover = render_cover()
     OUT.parent.mkdir(parents=True, exist_ok=True)
+    cover = render_cover()
     with zipfile.ZipFile(OUT, "w") as zf:
         zf.writestr("mimetype", "application/epub+zip", compress_type=zipfile.ZIP_STORED)
         zf.writestr("META-INF/container.xml", container(), compress_type=zipfile.ZIP_DEFLATED)
